@@ -1,0 +1,186 @@
+#!/bin/sh
+# fnOS lifecycle: status 0 = running, 3 = stopped; use only the package user.
+set -eu
+umask 077
+APP_DIR="${TRIM_APPDEST:?TRIM_APPDEST is required}"
+VAR_DIR="${TRIM_PKGVAR:?TRIM_PKGVAR is required}"
+BIN="$APP_DIR/server/photostudio"
+SOCKET="$APP_DIR/photostudio.sock"
+PID_FILE="$VAR_DIR/photostudio.pid"
+LOG_DIR="$VAR_DIR/logs"
+LOG_FILE="$LOG_DIR/photostudio.log"
+
+fail() {
+    printf '%s\n' "$1" >&2
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+        printf '%s\n' "$1" >> "$TRIM_TEMP_LOGFILE"
+    fi
+    return 1
+}
+
+# PID + Linux process start ticks + executable identity avoid signaling a reused PID.
+process_ticks() {
+    [ -r "/proc/$1/stat" ] || return 1
+    IFS= read -r proc_stat < "/proc/$1/stat" || return 1
+    proc_fields=${proc_stat##*) }
+    set -- $proc_fields
+    [ "$#" -ge 20 ] || return 1
+    case "$1" in Z|X|x) return 3 ;; esac
+    shift 19
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$1"
+}
+
+read_pid() {
+    [ -r "$PID_FILE" ] || return 1
+    IFS=' ' read -r pid ticks recorded_socket < "$PID_FILE" || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$ticks" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ]
+}
+
+verified_process() {
+    kill -0 "$pid" 2>/dev/null || return 3
+    actual_exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || return 3
+    expected_exe=$(readlink -f "$BIN" 2>/dev/null) || return 3
+    [ "$actual_exe" = "$expected_exe" ] || return 3
+    current_ticks=$(process_ticks "$pid") || return 3
+    [ "$current_ticks" = "$ticks" ] || return 3
+}
+
+status() {
+    read_pid || return 3
+    verified_process
+}
+
+recorded_process_stopped() {
+    [ ! -d "/proc/$pid" ] && return 0
+    if current_ticks=$(process_ticks "$pid"); then
+        [ "$current_ticks" != "$ticks" ]
+    else
+        # A zombie has no listener. For an unreadable live PID, fail closed.
+        [ "$?" -eq 3 ] || [ ! -d "/proc/$pid" ]
+    fi
+}
+
+socket_exists() {
+    [ -e "$SOCKET" ] || [ -L "$SOCKET" ]
+}
+
+socket_identity() {
+    # GNU stat does not follow symlinks by default. Record device, inode and
+    # ctime as well as type, mode and owner to recognize only this socket.
+    identity=$(LC_ALL=C TZ=UTC0 stat -c '%u:%a:%F:%d:%i:%z' -- "$SOCKET" 2>/dev/null) || return 1
+    case "$identity" in
+        "$package_uid:600:socket:"*) printf '%s\n' "$identity" ;;
+        *) return 1 ;;
+    esac
+}
+
+stop() {
+    known_socket=
+    if read_pid; then
+        if verified_process; then
+            # Recheck identity on every iteration, including before escalation.
+            kill -TERM "$pid" 2>/dev/null || true
+            i=0
+            while verified_process && [ "$i" -lt 12 ]; do
+                sleep 1
+                i=$((i + 1))
+            done
+            if verified_process; then
+                kill -KILL "$pid" 2>/dev/null || true
+                i=0
+                while verified_process && [ "$i" -lt 3 ]; do
+                    sleep 1
+                    i=$((i + 1))
+                done
+            fi
+        fi
+        if ! recorded_process_stopped; then
+            fail 'Cannot confirm Photo Studio stopped; leaving its PID file and socket untouched.'
+            return 1
+        fi
+        known_socket=$recorded_socket
+    fi
+    # Normal Go shutdown unlinks its own socket. A forced exit may leave it.
+    if socket_exists; then
+        if [ -z "$known_socket" ] || ! current_socket=$(socket_identity) || [ "$current_socket" != "$known_socket" ]; then
+            fail "Cannot verify the existing Photo Studio socket belongs to a stopped service; leaving it untouched: $SOCKET"
+            return 1
+        fi
+        rm -f -- "$SOCKET" || { fail "Cannot remove the verified stale Photo Studio socket: $SOCKET"; return 1; }
+    fi
+    rm -f -- "$PID_FILE"
+}
+
+start() {
+    if status; then return 0; fi
+    [ -x "$BIN" ] || { fail 'Photo Studio executable is missing.'; return 1; }
+    [ -f "$APP_DIR/web/dist/index.html" ] || { fail 'Photo Studio frontend is missing.'; return 1; }
+    command -v curl >/dev/null 2>&1 || { fail 'Photo Studio requires curl for its Unix socket health check.'; return 1; }
+    if socket_exists; then
+        fail "Photo Studio socket path is already occupied; leaving it untouched: $SOCKET"
+        return 1
+    fi
+    if read_pid && ! recorded_process_stopped; then
+        fail 'Cannot confirm the old Photo Studio PID stopped; refusing to launch another instance.'
+        return 1
+    fi
+    mkdir -p "$LOG_DIR" "$VAR_DIR/tmp"
+    export TMPDIR="$VAR_DIR/tmp"
+    if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt 8388608 ]; then
+        mv -f "$LOG_FILE" "$LOG_FILE.1"
+    fi
+    rm -f -- "$PID_FILE"
+    # Do not inherit the lifecycle lock or app-center stdin in the Go process.
+    "$BIN" --socket "$SOCKET" --web-root "$APP_DIR/web/dist" 9>&- </dev/null >>"$LOG_FILE" 2>&1 &
+    pid=$!
+    ticks=$(process_ticks "$pid") || {
+        fail 'Photo Studio exited before startup; inspect its package log.'
+        return 1
+    }
+    printf '%s %s\n' "$pid" "$ticks" > "$PID_FILE"
+    i=0
+    while [ "$i" -lt 10 ]; do
+        if recorded_process_stopped; then
+            rm -f -- "$PID_FILE"
+            fail 'Photo Studio failed to start; inspect its package log and socket path.'
+            return 1
+        fi
+        if verified_process && before_health=$(socket_identity) &&
+            curl --disable --noproxy '*' --unix-socket "$SOCKET" --fail --silent --max-time 1 \
+                http://localhost/app/photostudio/healthz >/dev/null && verified_process &&
+            after_health=$(socket_identity) && [ "$before_health" = "$after_health" ]; then
+            # Persist the identity of the socket that passed this service's health check.
+            printf '%s %s %s\n' "$pid" "$ticks" "$after_health" > "$PID_FILE"
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    stop || true
+    fail 'Photo Studio Unix socket health check timed out; inspect its package log.'
+    return 1
+}
+
+case "${1:-}" in
+    status) status ;;
+    start|stop|restart)
+        package_uid=$(id -u photostudio 2>/dev/null) || { fail 'Photo Studio package user is missing.'; exit 1; }
+        if [ "$package_uid" -eq 0 ] || [ "$(id -u)" != "$package_uid" ]; then
+            fail 'Photo Studio must run as its package user, not root or another account.'
+            exit 1
+        fi
+        mkdir -p "$VAR_DIR"
+        # Serialize application-center mutations; status remains read-only.
+        exec 9>"$VAR_DIR/lifecycle.lock"
+        flock -w 20 9 || { fail 'Photo Studio lifecycle is busy.'; exit 1; }
+        case "$1" in
+            start) start ;;
+            stop) stop ;;
+            restart) stop; start ;;
+        esac
+        ;;
+    *) printf 'Usage: %s {start|stop|status|restart}\n' "$0" >&2; exit 2 ;;
+esac

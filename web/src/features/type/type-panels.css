@@ -1,0 +1,62 @@
+/* Glyphs panel */
+.glyphs-panel { --glyph-size: 30px; padding: 8px; display: grid; gap: 6px; align-content: start; font-size: 11px; max-height: 70vh; grid-template-rows: auto auto auto auto minmax(0, 1fr) auto; }
+.gl-font, .gl-head { display: flex; gap: 6px; align-items: center; }
+.gl-font select { flex: 1; min-width: 0; }
+.gl-head select { flex: 1; min-width: 0; }
+.gl-head input[type='range'] { width: 80px; }
+.gl-label { color: var(--muted); }
+.gl-recent { display: flex; flex-wrap: wrap; gap: 2px; min-height: 26px; align-items: center; }
+.gl-recent .gl-cell { width: 26px; height: 26px; font-size: 16px; }
+.gl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--glyph-size), 1fr)); gap: 1px; overflow: auto; min-height: 120px; max-height: 50vh; background: var(--line-soft); border: 1px solid var(--line-soft); }
+.gl-cell { min-height: 0; height: var(--glyph-size); padding: 0; border: 0; border-radius: 0; background: var(--input); color: var(--text); font-size: calc(var(--glyph-size) * 0.6); line-height: 1; display: grid; place-items: center; font-family: inherit; font-weight: inherit; font-style: inherit; }
+.gl-cell:hover, .gl-cell:focus-visible { background: var(--accent-fill); color: var(--accent-text); outline: none; }
+.gl-retry { grid-column: 1 / -1; align-self: center; justify-self: center; font: 12px system-ui, sans-serif; }
+.gl-info { color: var(--muted); min-height: 14px; font-variant-numeric: tabular-nums; }
+
+/* Character and Paragraph Styles panels */
+.text-styles-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 160px; max-height: 60vh; font-size: 12px; }
+.ts-list { overflow: auto; padding: 4px 0; }
+.ts-row { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: default; white-space: nowrap; }
+.ts-row:hover { background: var(--hover); }
+.ts-row[aria-selected='true'] { background: var(--row-selected); }
+.ts-row:first-child .ts-name { color: var(--muted); }
+.ts-row[aria-selected='true']:first-child .ts-name { color: inherit; }
+.ts-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ts-override { font-weight: 700; }
+.ts-footer { display: flex; align-items: center; gap: 2px; padding: 3px 6px; border-top: 1px solid var(--line); background: var(--panel-tab); }
+.ts-note { flex: 1; color: var(--muted); font-size: 11px; }
+
+/* Cancel and Commit stay in view at the end of the options bar, also when
+   the bar scrolls sideways on narrow screens. */
+#tool-options .type-edit-actions { position: sticky; right: 0; display: flex; align-items: center; gap: 4px; padding-left: 4px; background: var(--chrome); }
+
+/* Text layer sections in the Properties panel */
+.type-props-fields { display: grid; gap: 4px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.type-props { display: grid; gap: 6px; margin-top: 6px; }
+.type-props h3 { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 0; }
+.type-props h3 .icon-button { min-height: 0; padding: 0 2px; }
+.type-props select { width: 100%; }
+.type-props .vec-hint { margin: 0; }
+.type-props .type-toggles { display: flex; flex-wrap: wrap; gap: 3px; }
+.type-props .type-toggles .mixed { opacity: 0.6; }
+.type-props .tp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+.type-props .tp-field { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.type-props .tp-field input:not([type='color']), .type-props .tp-field select { flex: 1; min-width: 0; width: auto; }
+.type-props .tp-field input[type='color'] { margin-left: auto; }
+.type-props .tp-field > span { min-width: 1.2em; font-size: 11px; }
+.type-props .tp-row { display: flex; align-items: center; gap: 10px; }
+.type-props .tp-row .tp-field { flex: 1; }
+.type-props .tp-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.type-props .tp-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+
+/* Language feature rows (Character and Paragraph panels) and option fields
+   that only apply to some choices. */
+.type-panel .type-row[hidden], dialog.type-path-options [hidden] { display: none; }
+.type-panel .type-row[data-features] { align-items: center; }
+.type-panel .type-row[data-features] .type-toggles { display: flex; gap: 3px; }
+
+/* Justification and Hyphenation dialogs */
+dialog.type-justification, dialog.type-hyphenation { width: 420px; max-width: calc(100vw - 32px); }
+.type-justify-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; border: 1px solid var(--line-soft); border-radius: 6px; padding: 6px 10px 10px; margin: 0 0 10px; min-width: 0; }
+.type-justify-row legend { padding: 0 4px; color: var(--muted); font-size: 12px; }
+.type-justify-row .dialog-field input { width: 100%; min-width: 0; }

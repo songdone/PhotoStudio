@@ -1,0 +1,135 @@
+// Type tools, on-canvas text editing, the Character/Paragraph panels and
+// the Type menu, built on the typography engine in imaging/text.
+
+import type { Editor } from '../../editor';
+import { commands, contributeMenu, registerCommand, registerPanel } from '../../app/registry';
+import { lazy, lazyPanel, lazyRun } from '../../app/lazy';
+import { allLayers } from '../../model/document';
+import { ensureFont, onFontsLoaded } from '../../imaging/text/fonts';
+import { installTypeTools, isTypeTool } from './tools';
+import { installTypeOptions } from './options';
+import { installTypePanels } from './panels';
+import { installTypeCommands } from './commands';
+import { installTextStyles } from './styles-panel';
+import { installLanguageCommands } from './language';
+import { installParagraphOptions } from './paragraph-options';
+import { installPathType } from './path-type';
+import { installTypeProperties } from './properties';
+import './type-panels.css';
+import * as typeSession from './session';
+import { commit, focusInput, onSessionChange, session, undoEdit } from './session';
+import { forgetLayout } from './text-utils';
+
+// The Glyphs panel and Find and Replace / Check Spelling load on first use.
+const glyphs = lazy(() => import('./glyphs'));
+const findSpell = lazy(() => import('./find-spell'));
+const matchFont = lazy(() => import('./match-font'));
+
+export function installType(e: Editor) {
+  installTypeTools(e);
+  e.closeHooks.push((s) => typeSession.cancelPendingStart(s));
+  installTypeOptions(e);
+  installTypePanels(e);
+  installTypeCommands(e);
+  registerPanel(lazyPanel({ id: 'glyphs', title: 'Glyphs', icon: 'glyphs', location: 'strip', hidden: true }, lazy(async () => (await glyphs()).glyphsPanel)));
+  onSessionChange(() => glyphs.loaded?.followSession(e));
+  installTextStyles(e);
+  installLanguageCommands(e);
+  installParagraphOptions(e);
+  const hasText = (e: Editor) => e.hasDocument && allLayers(e.doc.layers).some((l) => l.kind === 'text');
+  registerCommand(
+    {
+      id: 'edit.find-replace-text',
+      label: 'Find and Replace Text…',
+      recordable: false,
+      enabled: hasText,
+      description: 'Find text in text layers and change it.',
+      // The dialogs stay open beside the canvas; the command returns at once.
+      ...lazyRun(findSpell, (m, e) => void m.findReplace(e)),
+    },
+    {
+      id: 'edit.check-spelling',
+      label: 'Check Spelling…',
+      recordable: false,
+      enabled: hasText,
+      description: 'Check the spelling of text layers against an English dictionary.',
+      ...lazyRun(findSpell, (m, e) => void m.checkSpelling(e)),
+    },
+    {
+      id: 'type.match-font',
+      label: 'Match Font…',
+      recordable: false,
+      enabled: (e) => e.hasDocument,
+      description: 'Find fonts that look like text in the image and apply one to the selected text layer.',
+      ...lazyRun(matchFont, (m, e) => void m.matchFontDialog(e)),
+    },
+  );
+  contributeMenu('edit', ['edit.check-spelling', 'edit.find-replace-text'], 'edit.search');
+  installPathType(e);
+  installTypeProperties(e);
+  // Commands outside text editing commit the draft first. Find works with
+  // the live selection and commits it itself when replacing across layers.
+  // Edit › Undo and Redo (menu bar, History menus) step through the text
+  // edits while there are any, as Mod+Z does in the text.
+  const textStep = (id: string) => {
+    const s = session;
+    if (!s || s.composing) return false;
+    return id === 'edit.undo' ? s.undo.length > 0 : id === 'edit.redo' && s.redo.length > 0;
+  };
+  for (const id of ['edit.undo', 'edit.redo']) {
+    const c = commands.get(id);
+    const enabled = c?.enabled;
+    if (c) c.enabled = (e) => textStep(id) || (enabled ? enabled(e) : true);
+  }
+  // Edit commands that work inside the text being edited.
+  const TEXT_AWARE = new Set(['edit.find-replace-text', 'edit.paste-plain', 'edit.paste-text-attributes']);
+  const run = e.runCommand.bind(e);
+  e.runCommand = async (id: string, arg?: unknown) => {
+    if (textStep(id)) {
+      undoEdit(e, id === 'edit.redo');
+      focusInput(e);
+      return;
+    }
+    if (session && commands.has(id) && !TEXT_AWARE.has(id) && !/^(type|window|view|help)\./.test(id)) await commit(e);
+    return run(id, arg);
+  };
+  e.onUpdate(() => {
+    const s = session;
+    if (!s) return;
+    if (!isTypeTool(e.tool) || e.history.document !== s.draft || (!s.mask && e.selected !== s.layerId)) void commit(e);
+  });
+  // Double-clicking a text layer's thumbnail edits its text. Detected from
+  // pointer presses because the first click re-renders the layer list, so
+  // the browser's dblclick lands on a detached row.
+  let last = { id: '', time: 0 };
+  e.root.addEventListener(
+    'pointerdown',
+    (ev) => {
+      const thumb = (ev.target as HTMLElement).closest?.('.layer-thumbnail.text');
+      const id = thumb?.closest<HTMLElement>('[data-row]')?.dataset.row;
+      if (!id || ev.button !== 0) return;
+      const now = ev.timeStamp;
+      if (last.id === id && now - last.time < 500) {
+        last = { id: '', time: 0 };
+        setTimeout(() => void e.runCommand('type.edit'), 0);
+      } else last = { id, time: now };
+    },
+    true,
+  );
+  const refreshFonts = () => {
+    forgetLayout();
+    if (!e.renderer) return;
+    if (e.sessions.some((s) => allLayers(s.doc.layers).some((l) => !!l.textData))) {
+      e.update();
+      void e.windows.ensureSnapshots();
+    }
+  };
+  // Bundled faces load before being added to document.fonts, so the font
+  // manager also notifies us directly instead of relying on loadingdone.
+  onFontsLoaded(refreshFonts);
+  const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+  fonts?.addEventListener?.('loadingdone', refreshFonts);
+  void ensureFont('Inter', 400, false);
+  // Browser tests inspect the live session through the same module instance.
+  if (import.meta.env.DEV) Object.assign(window, { photoStudioType: typeSession });
+}

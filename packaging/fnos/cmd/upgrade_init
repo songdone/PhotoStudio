@@ -1,0 +1,4 @@
+#!/bin/sh
+# fnOS manages application stop/start around upgrades; no schema migration.
+set -eu
+exit 0

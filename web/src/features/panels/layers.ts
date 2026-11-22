@@ -1,0 +1,506 @@
+import type { Editor } from '../../editor';
+import { allLayers, blendGroupStarts, blendLabel, blends, findLayer, type Layer } from '../../model/document';
+import { escapeXML } from '../../model/assets';
+import { svg } from '../../app/icons';
+import { hasMask } from '../../model/masks';
+import { cachedSourceThumbnail, hydrateSourceThumbnails } from '../../ui/thumbnails';
+import { gridThumbnail } from './thumbnails';
+import { gridDocBounds } from '../../model/tiles';
+import { formDialog } from '../../ui/dialog';
+import { layerLock, ownLock, setFullLock, setPartialLock } from '../../model/locks';
+import { bindLayerDrag } from '../../ui/layers';
+import { showContextMenu } from '../../app/menubar';
+import type { Panel } from '../../app/registry';
+import { effectRows, fillThumb, fxBadge } from '../effects/layer-effects';
+import { patchList } from '../../ui/patch-list';
+import { colorLabelItems, isLayerColor, renameLayer } from '../layers/dialogs';
+import { localizedAttribute } from '../../i18n/dom';
+
+const kindIcon: Record<string, string> = {
+  group: 'folder',
+  text: 'type',
+  paint: 'paintbrush',
+  vector: 'pen-tool',
+  image: 'image',
+  pixel: 'image',
+  solid: 'square',
+  adjustment: 'adjustment-layer',
+};
+// Layers panel options: thumbnail size and what thumbnails frame, kept in this browser.
+export type ThumbnailSize = 'none' | 'small' | 'medium' | 'large';
+export type LayersPanelOptions = { thumbnails: ThumbnailSize; contents: 'document' | 'bounds' };
+const OPTIONS_KEY = 'photo-studio-layers-panel';
+const SIZES: ThumbnailSize[] = ['none', 'small', 'medium', 'large'];
+// Thumbnail height in CSS pixels and the sampled size (crisp on dense screens).
+const THUMB_PX: Record<ThumbnailSize, [number, number]> = { none: [0, 0], small: [20, 40], medium: [30, 64], large: [46, 96] };
+let panelOptions: LayersPanelOptions | undefined;
+export function layersPanelOptions(): LayersPanelOptions {
+  if (panelOptions) return panelOptions;
+  panelOptions = { thumbnails: 'medium', contents: 'document' };
+  try {
+    const raw = JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? '{}');
+    if (SIZES.includes(raw?.thumbnails)) panelOptions.thumbnails = raw.thumbnails;
+    if (raw?.contents === 'bounds') panelOptions.contents = 'bounds';
+  } catch {
+    // Defaults.
+  }
+  return panelOptions;
+}
+export function setLayersPanelOptions(e: Editor, next: Partial<LayersPanelOptions>) {
+  const o = layersPanelOptions();
+  if (next.thumbnails && SIZES.includes(next.thumbnails)) o.thumbnails = next.thumbnails;
+  if (next.contents === 'document' || next.contents === 'bounds') o.contents = next.contents;
+  try {
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify(o));
+  } catch {
+    // Kept for this page only.
+  }
+  e.update();
+}
+/** Thumbnail box width for the document's aspect ratio at `height` pixels. */
+export function thumbnailWidth(docW: number, docH: number, height: number) {
+  if (!height) return 0;
+  return Math.round(Math.min(height * 1.8, Math.max(height * 0.7, (height * docW) / Math.max(1, docH))));
+}
+function pixelThumbnail(e: Editor, l: Layer & { pixels: NonNullable<Layer['pixels']> }) {
+  const doc = e.doc;
+  const size = THUMB_PX[layersPanelOptions().thumbnails][1] || 64;
+  const b = layersPanelOptions().contents === 'bounds' ? gridDocBounds(l.pixels) : null;
+  const url = b ? gridThumbnail(e.assets.tiles, l.pixels, b.width, b.height, size, false, { x: b.x, y: b.y }) : gridThumbnail(e.assets.tiles, l.pixels, doc.width, doc.height, size);
+  return `<img src="${url}" alt="" draggable="false">`;
+}
+function thumbnail(e: Editor, l: Layer) {
+  const doc = e.doc;
+  if (l.artboard) return svg('artboard-layer', 16);
+  if (l.frame) return svg(l.frame.shape === 'ellipse' ? 'frame-ellipse' : 'frame-tool', 16);
+  if (l.kind === 'pixel' && l.pixels) return pixelThumbnail(e, l as Layer & { pixels: NonNullable<Layer['pixels']> });
+  if (l.kind === 'solid') return fillThumb(l) ?? `<span class="swatch-thumb" style="background:${l.color}"></span>`;
+  if (l.asset) {
+    const url = cachedSourceThumbnail(l, e.assets, doc);
+    return `<img ${url ? `src="${escapeXML(url)}"` : `data-source-thumbnail="${escapeXML(l.id)}"`} alt="" loading="lazy" draggable="false">`;
+  }
+  if (l.kind === 'adjustment' && l.adjustment) return svg(`adj-${l.adjustment.kind}`, 16);
+  return svg(kindIcon[l.kind] ?? 'image', 16);
+}
+function maskThumb(e: Editor, l: Layer) {
+  if (l.maskGrid) return `<img src="${gridThumbnail(e.assets.tiles, l.maskGrid, e.doc.width, e.doc.height, THUMB_PX[layersPanelOptions().thumbnails][1] || 64, true)}" alt="" draggable="false">`;
+  return svg('mask-add', 16);
+}
+// Layer filtering by kind or name from the panel's filter row.
+const filter = { kind: '', text: '', on: false };
+function matches(l: Layer): boolean {
+  if (!filter.on || (!filter.kind && !filter.text)) return true;
+  const kindOk =
+    !filter.kind ||
+    (filter.kind === 'pixel' && ['pixel', 'image', 'paint'].includes(l.kind)) ||
+    (filter.kind === 'adjustment' && (l.kind === 'adjustment' || l.kind === 'solid')) ||
+    (filter.kind === 'text' && l.kind === 'text') ||
+    (filter.kind === 'vector' && l.kind === 'vector') ||
+    (filter.kind === 'embedded' && l.kind === 'image');
+  return kindOk && (!filter.text || l.name.toLowerCase().includes(filter.text.toLowerCase()));
+}
+// Features narrow the list further (Isolate Layers) and add a notice above it.
+export const layerRowFilters: ((e: Editor, l: Layer) => boolean)[] = [];
+export const layerListBanners: ((e: Editor) => string)[] = [];
+let filterEditor: Editor | undefined;
+function visibleInFilter(l: Layer): boolean {
+  const own = matches(l) && (!filterEditor || layerRowFilters.every((f) => f(filterEditor!, l)));
+  return own || l.children.some(visibleInFilter);
+}
+/** Whether the Layers list shows `l` under its filter and isolation (its
+ * groups being expanded). */
+export function shownInLayerList(e: Editor, l: Layer) {
+  filterEditor = e;
+  return visibleInFilter(l);
+}
+// Features add sub-rows under a layer (Live Filters) without editing this file.
+export const layerRowExtras: ((e: Editor, l: Layer, depth: number) => string)[] = [];
+// Features add badges over a layer's thumbnail and a note under its name
+// (the first note returned wins over the default kind label).
+export const layerBadges: ((e: Editor, l: Layer) => string)[] = [];
+export const layerNotes: ((e: Editor, l: Layer) => string | undefined)[] = [];
+function note(e: Editor, l: Layer) {
+  for (const f of layerNotes) {
+    const n = f(e, l);
+    if (n !== undefined) return escapeXML(n);
+  }
+  if (l.artboard) return `artboard · ${l.artboard.rect.width} × ${l.artboard.rect.height}`;
+  if (l.frame) return l.children.length ? 'frame' : 'empty frame';
+  return l.kind === 'group' ? `${allLayers(l.children).length} layers` : l.kind === 'pixel' ? '' : l.kind === 'image' ? (l.assetColorSpace === 'srgb' ? 'embedded' : '') : l.fill ? `${l.fill.type} fill` : l.kind;
+}
+// One fragment per layer (its row, effect and extra rows), children after
+// their group, so the list patches row by row (ui/patch-list.ts).
+function rows(e: Editor, layers: Layer[], depth: number, out: string[] = []): string[] {
+  const selected = e.selectedIds;
+  [...layers]
+    .reverse()
+    .filter(visibleInFilter)
+    .forEach((l) => {
+      const collapsed = e.collapsedGroups.has(l.id);
+      const locked = l.locked || l.transparencyProtected || Object.values(l.protection ?? {}).some(Boolean);
+      const masked = hasMask(l) || !!l.maskGrid;
+      const maskLinked = l.pixelMask ? !l.pixelMask.positionRelativeToLayer : l.vectorMask ? !l.vectorMask.unlinked : !l.maskUnlinked;
+      const linkActive = !!l.linkGroup && [...selected].some((id) => id !== l.id && findLayer(e.doc.layers, id)?.linkGroup === l.linkGroup);
+      out.push(`<div class="layer-row ${selected.has(l.id) ? 'selected' : ''} ${l.background ? 'background-layer' : ''} ${l.visible ? '' : 'hidden-layer'} ${l.clipped ? 'clipped' : ''}" data-row="${escapeXML(l.id)}"${isLayerColor(l.colorLabel) ? ` data-color="${l.colorLabel}"` : ''} draggable="true" role="listitem" style="--depth:${depth}">
+<button class="eye" data-visibility="${escapeXML(l.id)}" ${localizedAttribute('title', l.visible ? 'Hide layer' : 'Show layer')} ${localizedAttribute('aria-label', l.visible ? 'Hide {name}' : 'Show {name}', { name: l.name })}>${l.visible ? svg('eye', 15) : ''}</button>
+${l.kind === 'group' ? `<button class="group-disclosure" data-collapse="${escapeXML(l.id)}" ${localizedAttribute('aria-label', collapsed ? 'Expand {name}' : 'Collapse {name}', { name: l.name })} aria-expanded="${!collapsed}">${svg(collapsed ? 'chevron-right' : 'chevron-down', 13)}</button>` : l.clipped ? `<span class="clip-arrow" title="Clipped to the layer below" aria-label="Clipping mask">↳</span>` : '<span class="disclosure-spacer"></span>'}
+<button class="layer-select" data-layer="${escapeXML(l.id)}" aria-pressed="${selected.has(l.id)}" aria-label="${escapeXML(l.name)}"><span class="layer-thumbnail ${l.kind} ${e.maskTarget === l.id ? '' : selected.has(l.id) && masked ? 'target' : ''}">${thumbnail(e, l)}${layerBadges.map((f) => f(e, l)).join('')}</span></button>
+${masked ? `<button class="mask-link ${maskLinked ? '' : 'unlinked'}" data-mask-link="${escapeXML(l.id)}" aria-pressed="${maskLinked}" ${localizedAttribute('aria-label', maskLinked ? 'Unlink mask for {name}' : 'Link mask for {name}', { name: l.name })} title="${maskLinked ? 'Mask moves with the layer (click to unlink)' : 'Mask stays in place (click to link)'}">${svg('link', 11)}</button>` : ''}
+${masked ? `<button class="mask-thumbnail ${l.maskDisabled ? 'disabled-mask' : ''} ${e.maskTarget === l.id ? 'target' : ''}" data-mask="${escapeXML(l.id)}" ${localizedAttribute('aria-label', 'Edit mask for {name}', { name: l.name })} aria-pressed="${e.maskTarget === l.id}" title="Layer mask (click to edit, Shift-click to disable)">${maskThumb(e, l)}</button>` : ''}
+<button class="layer-name" data-layer="${escapeXML(l.id)}" tabindex="-1" aria-hidden="true"><span class="name-text">${escapeXML(l.name)}</span><small>${note(e, l)}</small></button>
+${fxBadge(l)}${l.linkGroup ? `<span class="link-badge ${linkActive ? 'active' : ''}" title="Linked layer" aria-label="Linked layer">${svg('link', 13)}</span>` : ''}${locked ? `<span class="lock-badge" title="${l.locked ? 'Layer locked' : 'Layer partially locked'}" aria-label="${l.locked ? 'Layer locked' : 'Layer partially locked'}">${svg('lock', 13)}</span>` : ''}
+</div>${effectRows(l, depth)}${layerRowExtras.map((f) => f(e, l, depth)).join('')}`);
+      if (l.kind === 'group' && !collapsed) rows(e, l.children, depth + 1, out);
+    });
+  return out;
+}
+/** Shift-click: select the rows from the anchor to `id` as the list shows
+ * them, so layers hidden by filtering or isolation are left out. */
+function selectShownRange(e: Editor, el: HTMLElement, id: string, add: boolean) {
+  const shown = [...el.querySelectorAll<HTMLElement>('#layers .layer-row')].map((r) => r.dataset.row!);
+  const a = shown.indexOf(e.session.selectionAnchor),
+    b = shown.indexOf(id);
+  if (a < 0 || b < 0) return false;
+  e.transform.apply();
+  const range = shown.slice(Math.min(a, b), Math.max(a, b) + 1);
+  e.selectLayers(add ? [...e.selectedIds, ...range] : range);
+  e.update();
+  return true;
+}
+// The inline rename in progress, kept across redraws of the list: a rebuilt
+// row gets the same field back, with the typed name and focus.
+let renaming: { id: string; input: HTMLInputElement; done: (commit: boolean) => void } | undefined;
+let patching = false;
+function keepRenaming(list: Element) {
+  const r = renaming;
+  if (!r || r.input.isConnected) return;
+  const text = list.querySelector(`[data-row="${CSS.escape(r.id)}"] .layer-name .name-text`);
+  // The layer is gone (deleted, or filtered out of the list): nothing to rename.
+  if (!text) {
+    renaming = undefined;
+    return;
+  }
+  const { selectionStart, selectionEnd } = r.input;
+  text.replaceWith(r.input);
+  r.input.focus();
+  r.input.setSelectionRange(selectionStart, selectionEnd);
+}
+function blendSelect(l?: Layer, disabled = false) {
+  const options = (l?.kind === 'group' && !l.artboard && !l.frame ? (['pass through', ...blends] as Layer['blend'][]) : blends)
+    .map((b) => `${blendGroupStarts.includes(b) ? '<option disabled>──────────</option>' : ''}<option value="${b}" ${l?.blend === b ? 'selected' : ''}>${blendLabel(b)}</option>`)
+    .join('');
+  return `<select id="blend" aria-label="Blend mode" ${!l || disabled ? 'disabled' : ''}>${options}</select>`;
+}
+
+export const layersPanel: Panel = {
+  id: 'layers',
+  title: 'Layers',
+  icon: 'layers',
+  location: 'dock-bottom',
+  shortcut: 'F7',
+  mount: (e, el) => {
+    el.classList.add('layers-panel');
+    el.innerHTML = `<div class="layer-filter"><select class="layer-filter-kind" aria-label="Filter layers by kind"><option value="">Kind</option><option value="pixel">Pixel layers</option><option value="adjustment">Adjustment and fill layers</option><option value="text">Type layers</option><option value="vector">Shape layers</option><option value="embedded">Embedded objects</option></select><input class="layer-filter-text" type="search" placeholder="Name" aria-label="Filter layers by name"><button class="icon-button toggle layer-filter-toggle" aria-pressed="false" title="Turn layer filtering on or off" aria-label="Layer filtering">${svg('search', 13)}</button></div><div class="layer-options"></div><div class="lock-row"></div><div id="layers" role="list" aria-label="Document layers"></div><div class="layer-root-drop" hidden>Drop here to move to the top level</div>
+<div class="layer-footer">
+<button data-command="layer.link" title="Link or unlink the selected layers" aria-label="Link layers">${svg('link', 16)}</button>
+<button data-command="layer.style-dialog" title="Add a layer style" aria-label="Add a layer style">${svg('fx', 16)}</button>
+<button data-command="layer.add-mask" title="Add layer mask" aria-label="Add layer mask">${svg('mask-add', 16)}</button>
+<button data-layer-adjust title="Create new fill or adjustment layer" aria-label="New fill or adjustment layer">${svg('adjustment-layer', 16)}</button>
+<button data-command="layer.new-group-quick" data-alt-command="layer.new-group" title="Create a new group (Alt-click for options)" aria-label="New group">${svg('folder-plus', 16)}</button>
+<button data-command="layer.new-quick" data-alt-command="layer.new" title="Create a new layer (Alt-click for options)" aria-label="New layer">${svg('plus', 16)}</button>
+<button data-command="layer.delete" title="Delete layer" aria-label="Delete layer">${svg('trash-2', 16)}</button>
+</div><span id="layer-count" class="sr-only"></span>`;
+    el.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement;
+      if (target.closest('[data-layer-adjust]')) {
+        const r = target.closest('[data-layer-adjust]')!.getBoundingClientRect();
+        showContextMenu(e, r.left, r.top - 4, [
+          'layer.fill-solid', 'layer.fill-gradient', 'layer.fill-pattern', '-',
+          'layer.adj-brightness-contrast', 'layer.adj-levels', 'layer.adj-curves', 'layer.adj-exposure', '-',
+          'layer.adj-vibrance', 'layer.adj-hue-saturation', 'layer.adj-color-balance', 'layer.adj-black-white', 'layer.adj-photo-filter', 'layer.adj-channel-mixer', 'layer.adj-color-lookup', '-',
+          'layer.adj-invert', 'layer.adj-posterize', 'layer.adj-threshold', 'layer.adj-gradient-map', 'layer.adj-selective-color', '-',
+          'layer.adj-relight',
+        ]);
+        return;
+      }
+      const vis = target.closest<HTMLElement>('[data-visibility]')?.dataset.visibility;
+      if (vis) {
+        // Alt-click shows only this layer (with the groups around it, and a
+        // group's own layers as they are); a second Alt-click shows all
+        // layers again.
+        if (ev.altKey) {
+          const target = findLayer(e.doc.layers, vis);
+          if (!target) return;
+          const inside = new Set(allLayers(target.children).map((l) => l.id));
+          const shown = (l: Layer) => l.id === vis || !!findLayer(l.children, vis);
+          const only = allLayers(e.doc.layers).every((l) => inside.has(l.id) || (shown(l) ? l.visible : !l.visible));
+          e.command('Show/Hide Layers', (d) => {
+            for (const l of allLayers(d.layers)) if (only || !inside.has(l.id)) l.visible = only || shown(l);
+          });
+        } else
+          e.command('Toggle visibility', (d) => {
+            const l = findLayer(d.layers, vis);
+            if (l) l.visible = !l.visible;
+          });
+        return;
+      }
+      const collapse = target.closest<HTMLElement>('[data-collapse]')?.dataset.collapse;
+      if (collapse) {
+        if (e.collapsedGroups.has(collapse)) e.collapsedGroups.delete(collapse);
+        else e.collapsedGroups.add(collapse);
+        e.update();
+        el.querySelector<HTMLButtonElement>(`[data-collapse="${collapse}"]`)?.focus();
+        return;
+      }
+      const maskLink = target.closest<HTMLElement>('[data-mask-link]')?.dataset.maskLink;
+      if (maskLink) {
+        if (!e.selectedIds.has(maskLink) || e.selectedIds.size > 1) e.selectLayer(maskLink);
+        const l = findLayer(e.doc.layers, maskLink);
+        void e.runCommand(l?.vectorMask ? 'layer.vmask-link' : 'layer.mask-link');
+        return;
+      }
+      const maskId = target.closest<HTMLElement>('[data-mask]')?.dataset.mask;
+      if (maskId) {
+        if (ev.shiftKey) {
+          e.selected = maskId;
+          e.editLayer('Toggle Layer Mask', (l) => (l.maskDisabled = !l.maskDisabled));
+          return;
+        }
+        e.selectLayer(maskId);
+        e.maskTarget = maskId;
+        e.update();
+        return;
+      }
+      const id = target.closest<HTMLElement>('[data-layer]')?.dataset.layer;
+      if (id) {
+        // Mod-click on a thumbnail loads the layer's transparency as a selection.
+        if ((ev.metaKey || ev.ctrlKey) && target.closest('.layer-thumbnail')) {
+          void e.runCommand('select.load-transparency', id);
+          return;
+        }
+        // Re-selecting the only selected layer keeps the rows in place, so the
+        // second click of a double-click lands on the same element.
+        const only = e.selectedIds.size === 1 && e.selectedIds.has(id) && !e.maskTarget;
+        if (ev.shiftKey && selectShownRange(e, el, id, ev.metaKey || ev.ctrlKey)) return;
+        if (!(only && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey)) e.selectLayer(id, ev.metaKey || ev.ctrlKey, ev.shiftKey);
+      }
+    });
+    // Keyboard: with a layer focused, Up and Down (Home, End) select the
+    // layer above or below and move focus with it (Shift extends the
+    // selection); Left and Right collapse and expand a group. The keys stay in
+    // the list instead of nudging the layer on the canvas.
+    el.addEventListener('keydown', (ev) => {
+      const t = ev.target as HTMLElement;
+      if (!t.matches('#layers .layer-select') || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (!['ArrowUp', 'ArrowDown', 'Home', 'End', 'ArrowLeft', 'ArrowRight'].includes(ev.key)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const focus = (id: string) => el.querySelector<HTMLElement>(`#layers .layer-select[data-layer="${CSS.escape(id)}"]`)?.focus();
+      const own = t.dataset.layer!;
+      if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+        if (findLayer(e.doc.layers, own)?.kind !== 'group') return;
+        if (ev.key === 'ArrowLeft') e.collapsedGroups.add(own);
+        else e.collapsedGroups.delete(own);
+        e.update();
+        return focus(own);
+      }
+      const shown = [...el.querySelectorAll<HTMLElement>('#layers .layer-select')];
+      const at = shown.indexOf(t);
+      const next = ev.key === 'Home' ? shown[0] : ev.key === 'End' ? shown.at(-1) : shown[at + (ev.key === 'ArrowUp' ? -1 : 1)];
+      if (!next) return;
+      const id = next.dataset.layer!;
+      if (!(ev.shiftKey && selectShownRange(e, el, id, false))) e.selectLayer(id);
+      focus(id);
+    });
+    el.addEventListener('dblclick', async (ev) => {
+      const name = (ev.target as HTMLElement).closest<HTMLElement>('.layer-name');
+      const thumb = (ev.target as HTMLElement).closest<HTMLElement>('.layer-thumbnail,.fx-badge');
+      const row = (ev.target as HTMLElement).closest<HTMLElement>('[data-row]');
+      if (!row) return;
+      const id = row.dataset.row!;
+      // Double-clicking a layer mask opens Select and Mask on it, or the mask's
+      // Properties (Tools → Double-click a layer mask to open Select and Mask).
+      const maskThumb = (ev.target as HTMLElement).closest<HTMLElement>('[data-mask]');
+      if (maskThumb) {
+        e.selectLayer(id);
+        e.maskTarget = id;
+        e.update();
+        if (e.preferences.maskDblClickRefine) void e.runCommand('select.mask-refine', 'mask');
+        else e.dock.show('properties');
+        return;
+      }
+      // The Background layer converts to a normal layer instead of renaming.
+      if (findLayer(e.doc.layers, id)?.background && !(ev.target as HTMLElement).closest('.fx-badge,[data-visibility],[data-mask],[data-mask-link]')) {
+        e.selectLayer(id);
+        void e.runCommand('layer.from-background');
+        return;
+      }
+      if (thumb && (ev.target as HTMLElement).closest('.fx-badge')) {
+        void e.runCommand('layer.style-dialog');
+        return;
+      }
+      if (name) {
+        const l = findLayer(e.doc.layers, id);
+        if (!l) return;
+        const text = name.querySelector('.name-text') as HTMLElement;
+        const input = document.createElement('input');
+        input.className = 'layer-rename';
+        input.value = l.name;
+        input.setAttribute('aria-label', 'Layer name');
+        text.replaceWith(input);
+        input.focus();
+        input.select();
+        // Escape cancels: the input leaving the list afterwards blurs it, which
+        // must not commit the draft name.
+        let finished = false;
+        const done = (commit: boolean) => {
+          if (finished) return;
+          finished = true;
+          if (renaming?.input === input) renaming = undefined;
+          if (commit && input.value.trim() && input.value !== l.name) {
+            e.selected = id;
+            renameLayer(e, id, input.value);
+          } else e.update();
+        };
+        renaming?.done(true);
+        renaming = { id, input, done };
+        input.addEventListener('keydown', (k) => {
+          if (k.key === 'Enter' || k.key === 'Escape') {
+            // The key only ends the rename: it does not also press whatever
+            // control the redraw would hand the focus to. The focus goes back
+            // to the renamed layer's row.
+            k.preventDefault();
+            done(k.key === 'Enter');
+            el.querySelector<HTMLElement>(`#layers .layer-select[data-layer="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+          }
+          k.stopPropagation();
+        });
+        // Leaving the field commits; the list being redrawn under it (another
+        // edit, a collaborator's change) does not.
+        input.addEventListener('blur', () => !patching && done(true));
+      } else if (thumb) {
+        const l = findLayer(e.doc.layers, id);
+        if (l?.kind === 'text') void e.runCommand('type.edit');
+        else if (l?.kind === 'adjustment') e.dock.show('properties');
+        else if (l?.kind === 'solid' && l.fill) e.dock.show('properties');
+        else if (l?.kind === 'solid') void e.runCommand('color.pick-layer-color');
+        else if (l?.kind === 'image') void e.runCommand('layer.embed-edit');
+      } else if (!(ev.target as HTMLElement).closest('button,input')) {
+        // Double-clicking a row's empty area opens its layer style.
+        e.selectLayer(id);
+        void e.runCommand('layer.style-dialog');
+      }
+    });
+    el.addEventListener('contextmenu', (ev) => {
+      const row = (ev.target as HTMLElement).closest<HTMLElement>('[data-row]');
+      if (!row) return;
+      ev.preventDefault();
+      if (!e.selectedIds.has(row.dataset.row!)) e.selectLayer(row.dataset.row!);
+      const target = findLayer(e.doc.layers, row.dataset.row!);
+      const embedded = target?.kind === 'image';
+      showContextMenu(e, ev.clientX, ev.clientY, [
+        'layer.rename', 'layer.style-dialog', '-', 'layer.duplicate-dialog', 'layer.delete', 'layer.group', 'layer.ungroup', '-',
+        ...(target?.frame ? ['frame.place', 'frame.clear', '-'] : []),
+        'layer.embed-convert', ...(embedded ? ['layer.embed-new-via-copy', 'layer.embed-edit', 'layer.embed-replace', 'layer.embed-export', 'layer.embed-to-layers', 'layer.embed-reset'] : []), 'layer.rasterize', 'layer.rasterize-style', '-',
+        'layer.mask-toggle', 'layer.mask-delete', 'layer.mask-apply', 'layer.clipping-mask', '-',
+        'layer.style-copy', 'layer.style-paste', 'layer.style-clear', '-',
+        'layer.link', 'layer.select-linked', 'layer.from-background', '-',
+        { label: 'Color', items: colorLabelItems }, '-',
+        'layer.merge-down', 'layer.merge-visible', 'layer.flatten',
+      ]);
+    });
+    el.addEventListener('change', (ev) => {
+      const t = ev.target as HTMLInputElement;
+      if (t.id === 'blend') e.editLayer('Change blend mode', (l) => (l.blend = t.value as Layer['blend']));
+      else if (t.id === 'opacity') e.editLayer('Change opacity', (l) => (l.opacity = Math.max(0, Math.min(1, Number(t.value) / 100))));
+      else if (t.id === 'fill-opacity') e.editLayer('Change fill opacity', (l) => (l.fillOpacity = Math.max(0, Math.min(1, Number(t.value) / 100))));
+    });
+    el.addEventListener('click', (ev) => {
+      const lock = (ev.target as HTMLElement).closest<HTMLElement>('[data-lock-button]');
+      if (!lock || !e.layer) return;
+      const key = lock.dataset.lockButton!;
+      if (layerLock(e.doc.layers, e.selected, 'all', false)) return;
+      if (key === 'all') e.command('Lock layer', (d) => setFullLock(findLayer(d.layers, e.selected)!, !e.layer!.locked));
+      else
+        e.command('Change layer protection', (d) => {
+          const l = findLayer(d.layers, e.selected)!;
+          const k = key as 'transparency' | 'composite' | 'position';
+          setPartialLock(l, k, !ownLock(l, k === 'composite' ? 'pixels' : k));
+        });
+    });
+    const kind = el.querySelector<HTMLSelectElement>('.layer-filter-kind')!,
+      text = el.querySelector<HTMLInputElement>('.layer-filter-text')!,
+      toggle = el.querySelector<HTMLButtonElement>('.layer-filter-toggle')!;
+    const apply = () => {
+      filter.kind = kind.value;
+      filter.text = text.value;
+      toggle.setAttribute('aria-pressed', String(filter.on));
+      layersPanel.update!(e, el);
+    };
+    kind.addEventListener('change', () => {
+      filter.on = true;
+      apply();
+    });
+    text.addEventListener('input', () => {
+      filter.on = true;
+      apply();
+    });
+    toggle.addEventListener('click', () => {
+      filter.on = !filter.on;
+      apply();
+    });
+    bindLayerDrag(e, el);
+  },
+  update: (e, el) => {
+    // Thumbnail size from Panel Options; boxes follow the document's aspect ratio.
+    const opts = layersPanelOptions();
+    el.dataset.thumbnails = opts.thumbnails;
+    el.style.setProperty('--thumb-w', `${thumbnailWidth(e.doc.width, e.doc.height, THUMB_PX[opts.thumbnails][0])}px`);
+    const l = e.selectedIds.size === 1 ? e.layer : undefined;
+    const locked = !!l && !!layerLock(e.doc.layers, l.id, 'all', false);
+    const options = el.querySelector('.layer-options')!;
+    const focus = document.activeElement?.id;
+    patchList(options, [`${blendSelect(l, locked || l?.locked)}<label class="opacity-control">Opacity <input id="opacity" type="number" min="0" max="100" value="${Math.round((l?.opacity ?? 1) * 100)}" ${!l || locked || l.locked ? 'disabled' : ''}>%</label>`]);
+    const lockRow = el.querySelector('.lock-row')!;
+    const own = (k: 'transparency' | 'pixels' | 'position') => !!l && ownLock(l, k);
+    patchList(lockRow, [`<span class="lock-label-text">Lock:</span>
+<button class="icon-button toggle" data-lock-button="transparency" aria-pressed="${own('transparency')}" title="Lock transparent pixels" aria-label="Lock transparency" ${!l || locked ? 'disabled' : ''}>${svg('grid-2x2', 14)}</button>
+<button class="icon-button toggle" data-lock-button="composite" aria-pressed="${own('pixels')}" title="Lock image pixels" aria-label="Lock image pixels" ${!l || locked ? 'disabled' : ''}>${svg('paintbrush', 14)}</button>
+<button class="icon-button toggle" data-lock-button="position" aria-pressed="${own('position')}" title="Lock position" aria-label="Lock position" ${!l || locked ? 'disabled' : ''}>${svg('move', 14)}</button>
+<button class="icon-button toggle" data-lock-button="all" aria-pressed="${!!l?.locked}" title="Lock all" aria-label="Lock layer" ${!l || locked ? 'disabled' : ''}>${svg('lock', 14)}</button>
+<label class="opacity-control fill-control">Fill <input id="fill-opacity" type="number" min="0" max="100" value="${Math.round((l?.fillOpacity ?? 1) * 100)}" ${!l || locked || l.locked ? 'disabled' : ''}>%</label>`]);
+    if (focus === 'blend' || focus === 'opacity' || focus === 'fill-opacity') el.querySelector<HTMLElement>(`#${focus}`)?.focus();
+    const list = el.querySelector('#layers')!;
+    const scroll = list.scrollTop;
+    filterEditor = e;
+    const banners = layerListBanners.map((f) => f(e)).filter(Boolean);
+    const list_ = [...banners, ...rows(e, e.doc.layers, 0)];
+    patching = true;
+    try {
+      patchList(list, list_.length ? list_ : [`<div class="empty-layers">${svg('layers-2', 22)}<p>Your layers will appear here</p><button data-command="file.open">Add an image</button></div>`]);
+    } finally {
+      patching = false;
+    }
+    keepRenaming(list);
+    list.scrollTop = scroll;
+    el.querySelector('.layer-root-drop')!.toggleAttribute('hidden', !e.doc.layers.length);
+    el.querySelector('#layer-count')!.textContent = String(allLayers(e.doc.layers).length);
+    hydrateSourceThumbnails(el, e.doc, e.assets);
+  },
+  menu: () => ['layer.new', 'layer.duplicate-dialog', 'layer.delete', '-', 'layer.new-group', 'layer.group', '-', 'layer.rename', 'layer.style-dialog', { label: 'Color', items: colorLabelItems }, '-', 'layer.clipping-mask', '-', 'layer.merge-down', 'layer.merge-visible', 'layer.flatten', '-', 'layers.panel-options'],
+};
+
+/** Layers → Panel Options: thumbnail size and contents. */
+async function panelOptionsDialog(e: Editor) {
+  const o = layersPanelOptions();
+  const v = await formDialog(
+    'Layers Panel Options',
+    [
+      { name: 'thumbnails', label: 'Thumbnail size', value: o.thumbnails, type: 'select', options: [['none', 'None'], ['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']] },
+      { name: 'contents', label: 'Thumbnail contents', value: o.contents, type: 'select', options: [['document', 'Entire document'], ['bounds', 'Layer bounds']] },
+    ],
+    'OK',
+  );
+  if (v) setLayersPanelOptions(e, { thumbnails: v.thumbnails as ThumbnailSize, contents: v.contents as LayersPanelOptions['contents'] });
+}
+export const layersPanelOptionsCommand = { id: 'layers.panel-options', label: 'Panel Options…', description: 'Choose the thumbnail size and what layer thumbnails show.', run: (e: Editor) => panelOptionsDialog(e), recordable: false };

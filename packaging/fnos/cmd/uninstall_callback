@@ -1,0 +1,4 @@
+#!/bin/sh
+# No shared directories, host integrations or external resources to remove.
+set -eu
+exit 0

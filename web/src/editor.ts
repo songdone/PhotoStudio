@@ -1,0 +1,1213 @@
+import { newDocument, findLayer, allLayers, MAX_LAYERS, type PhotoDocument, type Layer } from './model/document';
+import { ImageEngine } from './engine/engine';
+import { Renderer } from './renderer/renderer';
+import { FreeTransform } from './ui/transform';
+import { selectedRoots, visibleRows } from './model/layers';
+import { layerLock, type LockOperation } from './model/locks';
+import { DocumentSession } from './app/session';
+import { appShell } from './app/shell';
+import { installUserMenu } from './app/user-menu';
+import { MenuBar } from './app/menubar';
+import { Toolbar } from './app/toolbar';
+import { Dock } from './app/dock';
+import { bindCanvas, type CanvasPointer } from './app/pointer';
+import { commands, findCommand, overlays, tools, type Tool } from './app/registry';
+import { brushSizeStep, eventShortcut, platformShortcut } from './app/shortcuts';
+import { SpringTools } from './app/spring-tools';
+import { watchOptionTips } from './app/option-tips';
+import { scrollableRow } from './app/scroll-row';
+import { svg } from './app/icons';
+import { loadError, startIdleWork } from './app/lazy';
+import { emitActivity } from './app/activity';
+import { rulerTicks, rulerUnitScale } from './ui/rulers';
+import { DocumentView, WindowManager } from './app/views';
+import { applyAffine, centerPoint, fitZoom, invertAffine, panToCenter, stageTransform, viewMatrix, zoomAround } from './app/view-transform';
+import { commitPixelResample, commitPixelTranslation, pixelTransformKind, syncPixelTransform } from './model/pixel-layer';
+import { installFeatures } from './features';
+import { followLinkedMasks } from './model/links';
+import { bakeTextScale } from './model/text-layer';
+import type { ColorControls } from './ui/color';
+import type { History } from './history/history';
+import type { Assets } from './model/assets';
+import { loadPreferences, PREFERENCES_KEY, type Preferences } from './model/preferences';
+import { t, type TranslationValues } from './i18n/translate';
+import { setLanguage } from './i18n/locale';
+import { setLocalizedText } from './i18n/dom';
+
+const modeLabels: Record<string, string> = { rgb: 'RGB', grayscale: 'Gray', cmyk: 'CMYK', lab: 'Lab', indexed: 'Index', bitmap: 'Bitmap', duotone: 'Duotone', multichannel: 'Multichannel' };
+const modeLabel = (doc: PhotoDocument) => modeLabels[doc.mode ?? 'rgb'] ?? 'RGB';
+
+export type { Preferences } from './model/preferences';
+export type StartupStage = 'editor' | 'graphics' | 'image';
+
+export class Editor {
+  engine!: ImageEngine;
+  renderer!: Renderer;
+  sessions: DocumentSession[] = [];
+  // Windows onto documents, in tab order; a document can have several.
+  views: DocumentView[] = [];
+  activeView!: DocumentView;
+  windows: WindowManager;
+  private viewUse = 0;
+  autoSelect = true;
+  tool = 'move';
+  color = '#000000';
+  background = '#ffffff';
+  colorControls?: ColorControls;
+  transform: FreeTransform;
+  // A feature-owned modal edit (advanced transform, crop) that finishes before
+  // any other edit and supplies the document shown on the canvas meanwhile.
+  modal?: { document?: PhotoDocument; readonly pendingChanges?: boolean; apply(): void | Promise<void>; cancel(): void };
+  menubar!: MenuBar;
+  toolbar!: Toolbar;
+  dock!: Dock;
+  preferences: Preferences;
+  // Shared tool settings; features extend this bag with their own keys.
+  settings: Record<string, unknown> = {};
+  brushSize = 30;
+  maskSoftness = 0.5;
+  maskOpacity = 1;
+  tolerance = 32;
+  busy = false;
+  toolBusy = false;
+  private toastTimer = 0;
+  private renderFrame = 0;
+  private lastDoc?: PhotoDocument;
+  private updateHooks: ((e: Editor) => void)[] = [];
+  // Run on every new history state after pixel layers are normalized, with the
+  // previous state (frame animation records edits this way).
+  documentHooks: ((doc: PhotoDocument, before: PhotoDocument) => void)[] = [];
+  constructor(public root: HTMLElement) {
+    this.preferences = readPreferences();
+    setLanguage(this.preferences.uiLanguage);
+    appShell(root);
+    installUserMenu(this);
+    this.windows = new WindowManager(this);
+    this.session = this.newSession();
+    this.transform = new FreeTransform(this);
+    if (matchMedia('(max-width:760px)').matches) root.classList.add('panels-hidden');
+  }
+  // ----- Sessions -----
+  newSession(doc = newDocument(1600, 1000, t('Untitled'))) {
+    const s = new DocumentSession(doc);
+    s.pendingEditsChanged = () => {
+      this.windows.updateDirtyIndicators(s);
+      if (s === this.activeView?.session) this.dock?.update();
+    };
+    s.history.limit = this.preferences.historyStates;
+    s.history.nonLinear = () => this.preferences.nonLinearHistory;
+    s.history.normalize = (d, before) => {
+      followLinkedMasks(before, d, s.assets.tiles);
+      this.normalizePixelLayers(d, s.assets, before);
+      for (const hook of this.documentHooks) hook(d, before);
+    };
+    this.sessions.push(s);
+    this.views.push(new DocumentView(s));
+    return s;
+  }
+  /** The active document; assigning switches to its most recent window. */
+  get session(): DocumentSession {
+    return this.activeView.session;
+  }
+  set session(s: DocumentSession) {
+    const v = this.viewsOf(s).at(-1) ?? this.addView(s);
+    // A task that opens or creates a document switches to it: the tool ends
+    // its work in the document it was used in, as for a tab switch (work that
+    // takes time keeps to that document itself).
+    const leaving = !!this.transform && !!this.activeView && s !== this.activeView.session && this.sessions.includes(this.activeView.session);
+    if (leaving) {
+      this.transform.apply();
+      void this.activeTool?.deactivate?.(this, 'document');
+    }
+    this.setActiveView(v);
+    if (leaving) this.activeTool?.activate?.(this);
+  }
+  /** Windows of a document, least recently used first. */
+  viewsOf(s: DocumentSession) {
+    return this.views.filter((v) => v.session === s).sort((a, b) => a.used - b.used);
+  }
+  /** Another window onto a document, placed after its existing windows. */
+  addView(s: DocumentSession, from?: DocumentView) {
+    const v = new DocumentView(s);
+    if (from) Object.assign(v, { zoom: from.zoom, pan: { ...from.pan }, rotation: from.rotation, flip: from.flip });
+    const last = this.views.map((x) => x.session).lastIndexOf(s);
+    this.views.splice(last < 0 ? this.views.length : last + 1, 0, v);
+    return v;
+  }
+  private setActiveView(v: DocumentView) {
+    v.used = ++this.viewUse;
+    const changed = v !== this.activeView;
+    this.activeView = v;
+    if (changed && this.windows?.multi) this.windows.layout();
+  }
+  /** Make a window active: it receives input and hosts the live canvas. The
+   * tool first finishes its work in the document it was used in (committing
+   * text, applying waiting strokes). */
+  async activateView(v: DocumentView) {
+    if (v === this.activeView || !this.views.includes(v)) return;
+    const turn = ++this.switches;
+    this.transform.apply();
+    const free = !this.busy;
+    await this.activeTool?.deactivate?.(this, 'document');
+    // Work the tool started as a task of its own.
+    if (free && this.busy) await this.idle;
+    // A later choice (another tab clicked meanwhile) wins.
+    if (turn !== this.switches || v === this.activeView || !this.views.includes(v)) return;
+    this.setActiveView(v);
+    this.activeTool?.activate?.(this);
+    this.view();
+    this.update();
+  }
+  private switches = 0;
+  // A window chosen while a task was running; it is shown when the task ends.
+  private pendingView?: DocumentView;
+  /** Show a window the user chose (a tab, a window, the keyboard). While a
+   * task runs the switch waits for it, so the task's edits stay in the
+   * document it started in. */
+  async showView(v: DocumentView) {
+    if (!this.busy) return this.activateView(v);
+    this.pendingView = v;
+    this.message(`“${v.session.doc.name}” is shown when the current task finishes.`);
+  }
+  /** Close one window; the last window of a document closes the document. */
+  async closeView(v: DocumentView) {
+    const siblings = this.views.filter((x) => x.session === v.session);
+    if (siblings.length < 2) return this.closeSession(v.session);
+    const i = this.views.indexOf(v);
+    this.views.splice(i, 1);
+    if (v === this.activeView) this.setActiveView(this.viewsOf(v.session).at(-1)!);
+    this.windows.refresh();
+    this.update();
+    return true;
+  }
+  /** Horizontal display stretch of a document's pixels (pixel aspect correction). */
+  viewAspect(s = this.session) {
+    const a = s.doc.pixelAspect;
+    return a && a !== 1 && this.preferences.aspectCorrection !== false ? a : 1;
+  }
+  get history(): History {
+    return this.session.history;
+  }
+  get assets(): Assets {
+    return this.session.assets;
+  }
+  set assets(a: Assets) {
+    this.session.assets = a;
+  }
+  get storage() {
+    return this.session.storage;
+  }
+  get selectedIds() {
+    return this.session.selectedIds;
+  }
+  set selectedIds(ids: Set<string>) {
+    this.session.selectedIds = ids;
+  }
+  get collapsedGroups() {
+    return this.session.collapsedGroups;
+  }
+  get zoom() {
+    return this.activeView.zoom;
+  }
+  set zoom(z: number) {
+    this.activeView.zoom = z;
+  }
+  get pan() {
+    return this.activeView.pan;
+  }
+  set pan(p: { x: number; y: number }) {
+    this.activeView.pan = p;
+  }
+  get rotation() {
+    return this.activeView.rotation;
+  }
+  get hasDocument() {
+    return this.session.hasDocument;
+  }
+  set hasDocument(v: boolean) {
+    this.session.hasDocument = v;
+  }
+  get saved() {
+    return this.session.saved;
+  }
+  set saved(d: PhotoDocument | undefined) {
+    this.session.saved = d;
+  }
+  get maskTarget() {
+    return this.session.maskTarget;
+  }
+  set maskTarget(id: string) {
+    this.session.maskTarget = id;
+  }
+  async switchSession(s: DocumentSession) {
+    if (s === this.session) return;
+    await this.activateView(this.viewsOf(s).at(-1) ?? this.addView(s));
+  }
+  // Called after a document tab closes (features drop state tied to it).
+  closeHooks: ((s: DocumentSession) => void)[] = [];
+  // Called after a document is saved, with the native project that was
+  // written (absent when the file written was a PSD).
+  saveHooks: ((s: DocumentSession, project?: Blob) => void)[] = [];
+  // Called when a save of the document is given up by the user (a question
+  // before writing was cancelled), so a pending close can stop waiting.
+  saveCancelHooks: ((s: DocumentSession) => void)[] = [];
+  /** Edits still held by the active tool, outside the session's history. */
+  hasPendingChanges(s = this.session) {
+    return s === this.session && (this.transform.changed || !!this.modal?.pendingChanges);
+  }
+  async closeSession(s: DocumentSession, force = false) {
+    if (!force) {
+      try {
+        await s.waitForEdits();
+      } catch (error) {
+        this.message(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+    }
+    if (!this.sessions.includes(s)) return true;
+    if (!force && s.closeHandler) {
+      if (!(await s.closeHandler())) return false;
+    } else if (!force && (s.dirty || this.hasPendingChanges(s))) {
+      const { saveChangesDialog } = await import('./ui/dialog');
+      const choice = await saveChangesDialog(`Save changes to “${s.doc.name}” before closing?`, 'Your changes will be lost if you don’t save them.');
+      if (choice === 'cancel' || (choice === 'save' && !(await this.saveBeforeClose(s)))) return false;
+    }
+    // Another request (a second click on the close button) closed it meanwhile.
+    if (!this.sessions.includes(s)) return true;
+    if (s === this.session) {
+      this.transform.cancel();
+      this.modal?.cancel();
+    }
+    const i = this.sessions.indexOf(s);
+    const active = s === this.session;
+    this.sessions.splice(i, 1);
+    this.views = this.views.filter((v) => v.session !== s);
+    await this.renderer?.settle();
+    s.dispose();
+    for (const hook of this.closeHooks) hook(s);
+    if (!this.sessions.length) this.newSession();
+    if (active || !this.views.includes(this.activeView)) this.session = this.sessions[Math.max(0, i - 1)] ?? this.sessions[0];
+    this.windows.refresh();
+    this.fit();
+    this.update();
+    return true;
+  }
+  /** Save a document that is about to close; resolves whether it was saved.
+   * A first save asks where in a Puter picker that never answers when it is
+   * dismissed, so anything else done in the workspace meanwhile gives up on
+   * closing (the document stays open). */
+  private async saveBeforeClose(s: DocumentSession) {
+    const save = findCommand('file.save');
+    if (!save) return false;
+    if (s !== this.session) await this.switchSession(s);
+    let failed = false;
+    const task = async () => {
+      try {
+        this.transform.apply();
+        await Promise.all([this.modal?.apply(), s.waitForEdits()]);
+        await save.run(this);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    };
+    let saved!: (value: boolean) => void;
+    const answer = new Promise<boolean>((resolve) => (saved = resolve));
+    const hook = (x: DocumentSession) => x === s && saved(true);
+    const other = () => saved(false);
+    const cancelled = (x: DocumentSession) => x === s && saved(false);
+    this.saveHooks.push(hook);
+    this.saveCancelHooks.push(cancelled);
+    try {
+      if (this.busy) await task().catch((error) => this.message(error instanceof Error ? error.message : String(error)));
+      else await this.run(task);
+      if (failed || !this.sessions.includes(s)) return false;
+      if (!s.dirty) return true;
+      document.addEventListener('pointerdown', other, true);
+      document.addEventListener('keydown', other, true);
+      return (await answer) && !s.dirty;
+    } finally {
+      this.saveHooks.splice(this.saveHooks.indexOf(hook), 1);
+      this.saveCancelHooks.splice(this.saveCancelHooks.indexOf(cancelled), 1);
+      document.removeEventListener('pointerdown', other, true);
+      document.removeEventListener('keydown', other, true);
+    }
+  }
+  /** Session for a newly opened document: reuse an untouched empty workspace. */
+  sessionForOpen() {
+    if (!this.session.hasDocument && !this.session.history.canUndo) return this.session;
+    const s = this.newSession();
+    this.session = s;
+    // Workspace → Open documents as tabs (off: new documents float).
+    if (!this.preferences.openAsTabs && this.windows.kind === 'tabs') this.windows.float(this.viewsOf(s));
+    return s;
+  }
+  // ----- Layer selection -----
+  get selected() {
+    return [...this.selectedIds].at(-1) ?? '';
+  }
+  set selected(id: string) {
+    this.selectLayers(id ? [id] : []);
+  }
+  get selectedLayers() {
+    return selectedRoots(this.doc.layers, this.selectedIds);
+  }
+  selectLayers(ids: string[]) {
+    if (ids.length !== 1 || ids[0] !== this.maskTarget) this.maskTarget = '';
+    this.session.selectedIds = new Set(ids);
+    this.session.selections.set(this.doc, ids);
+  }
+  selectLayer(id: string, toggle = false, range = false) {
+    this.maskTarget = '';
+    this.transform.apply();
+    const reveal = (layers: Layer[]): boolean =>
+      layers.some((l) => {
+        if (l.id === id) return true;
+        if (!reveal(l.children)) return false;
+        this.collapsedGroups.delete(l.id);
+        return true;
+      });
+    reveal(this.doc.layers);
+    const rows = visibleRows(this.doc.layers, this.collapsedGroups).map((l) => l.id);
+    if (range && rows.includes(this.session.selectionAnchor)) {
+      const a = rows.indexOf(this.session.selectionAnchor),
+        b = rows.indexOf(id);
+      const selection = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
+      this.selectLayers(toggle ? [...this.selectedIds, ...selection] : selection);
+    } else {
+      const ids = new Set(toggle ? this.selectedIds : []);
+      if (toggle && ids.has(id)) ids.delete(id);
+      else ids.add(id);
+      this.selectLayers([...ids]);
+      this.session.selectionAnchor = id;
+    }
+    this.update();
+  }
+  restoreSelection() {
+    this.selectLayers(this.session.selections.get(this.doc) ?? [...this.selectedIds]);
+    this.update();
+  }
+  get editingMask() {
+    return this.selectedIds.size === 1 && this.maskTarget === this.selected;
+  }
+  get doc() {
+    return this.history.document;
+  }
+  get layer() {
+    return findLayer(this.doc.layers, this.selected);
+  }
+  get dirty() {
+    return this.hasDocument && (this.doc !== this.saved || this.session.unsavedExtras || this.transform.changed);
+  }
+  get activeTool() {
+    return tools.get(this.tool);
+  }
+  el<T extends HTMLElement = HTMLElement>(selector: string) {
+    return this.root.querySelector<T>(selector)!;
+  }
+  onUpdate(hook: (e: Editor) => void) {
+    this.updateHooks.push(hook);
+  }
+  private readyHooks: ((e: Editor) => void)[] = [];
+  /** Run once the compositor exists (immediately if it already does). */
+  whenReady(hook: (e: Editor) => void) {
+    if (this.renderer) hook(this);
+    else this.readyHooks.push(hook);
+  }
+  // ----- Startup -----
+  async start(onStage: (stage: StartupStage) => void) {
+    onStage('image');
+    this.engine = new ImageEngine();
+    onStage('editor');
+    installFeatures(this);
+    this.menubar = new MenuBar(this, this.el('.menubar'));
+    this.toolbar = new Toolbar(this, this.el('.toolbar'));
+    this.dock = new Dock(this, this.el('.dock'));
+    this.dock.registerCommands();
+    this.bind();
+    this.transform.bind();
+    bindCanvas(this);
+    this.dock.render();
+    performance.mark('photo-studio:shell');
+    onStage('graphics');
+    this.renderer = await Renderer.create(this.el<HTMLCanvasElement>('#canvas'), this.engine, this.preferences.gpuBackend);
+    onStage('image');
+    await this.engine.ready();
+    onStage('editor');
+    if (this.preferences.gpuBackend === 'webgpu' && !/webgpu/i.test(this.renderer.name)) this.message('WebGPU is not available in this browser; using WebGL2.');
+    this.renderer.frameListeners.add((canvas, doc) => this.windows.frame(canvas, doc));
+    for (const hook of this.readyHooks.splice(0)) hook(this);
+    this.windows.kind = this.preferences.windowLayout ?? 'tabs';
+    this.windows.layout();
+    this.setTool(this.tool);
+    this.fit();
+    this.update();
+    this.el('#canvas').addEventListener('renderer-notice', (e) => this.message((e as CustomEvent<string>).detail));
+    this.el('#canvas').addEventListener('renderer-lost', (e) => this.message((e as CustomEvent<string>).detail));
+    this.el('#engine-status').textContent = this.renderer.name;
+    performance.mark('photo-studio:ready');
+    startIdleWork();
+  }
+  message(text: string, values?: TranslationValues) {
+    const status = this.el('#status');
+    status.dataset.messageSource = text;
+    setLocalizedText(status, text, values, 'message');
+    const toast = this.el('#toast');
+    // Both are live regions: only one may speak, or screen readers say each
+    // message twice. The toast speaks when the status bar is hidden, which
+    // only full screen mode does (checked without forcing a layout).
+    toast.setAttribute('aria-hidden', String(this.root.dataset.screenMode !== '2'));
+    setLocalizedText(toast, text, values, 'message');
+    toast.hidden = false;
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => (toast.hidden = true), 5500);
+  }
+  // Resolves when the running task ends (or releases the editor).
+  idle: Promise<void> = Promise.resolve();
+  private settle?: () => void;
+  async run(task: () => Promise<void>) {
+    if (this.busy) return;
+    this.busy = true;
+    const idle = (this.idle = new Promise((resolve) => (this.settle = resolve)));
+    this.root.setAttribute('aria-busy', 'true');
+    try {
+      await task();
+    } catch (thrown) {
+      // Code a task imports itself (not through `lazy`) can fail to load too.
+      const error = loadError(thrown);
+      // Messages for the user are plain Errors; anything else is a bug and
+      // keeps its stack in the console.
+      if (error instanceof TypeError || error instanceof RangeError || error instanceof ReferenceError || error instanceof SyntaxError) console.error(error);
+      this.message(error instanceof Error ? error.message : String(error));
+    } finally {
+      // Unless the task released the editor and another one runs now.
+      if (this.idle === idle) this.release();
+    }
+  }
+  /** Let the user work while a task waits on something that may never answer
+   * (a Puter picker that was dismissed); later steps run through `run` again. */
+  release() {
+    if (!this.busy) return;
+    this.busy = false;
+    this.root.removeAttribute('aria-busy');
+    this.settle?.();
+    const v = this.pendingView;
+    this.pendingView = undefined;
+    if (v && v !== this.activeView && this.views.includes(v)) void this.activateView(v);
+  }
+  /** Run a registered command by ID (menus, shortcuts, buttons, actions). */
+  async runCommand(id: string, arg?: unknown) {
+    const c = findCommand(id);
+    if (!c) {
+      this.message(`Unknown command: ${id}`);
+      return;
+    }
+    if (c.enabled && !c.enabled(this)) return;
+    const outer = this.currentCommand;
+    this.currentCommand = this.lastCommand = id;
+    try {
+      await this.run(async () => {
+        // File commands read the document directly. Embedded transforms can
+        // finish asynchronously, so keep the task busy until they commit.
+        if (id.startsWith('file.') && !this.toolBusy) {
+          this.transform.apply();
+          // Observe pending-edit failures before a tool reports and handles
+          // its error; otherwise a failed transform can look complete here.
+          await Promise.all([this.modal?.apply(), this.session.waitForEdits()]);
+        }
+        // Recorded only when it runs: a command skipped because another
+        // task is running must not become an action step.
+        this.recorder?.(id, arg);
+        await c.run(this, arg);
+        emitActivity({ kind: 'command', id: c.id, arg });
+      });
+    } finally {
+      this.currentCommand = outer;
+    }
+  }
+  // The command running now, and the last one run (provenance attributes
+  // history steps to them).
+  currentCommand?: string;
+  lastCommand?: string;
+  // The Actions panel installs a recorder while recording.
+  recorder?: (id: string, arg?: unknown) => void;
+  /** One undo step in the active document, or in `opts.session`: work that
+   * finishes after the user switched documents still edits its own. */
+  command(label: string, edit: (doc: PhotoDocument) => void, opts: { coalesce?: boolean; session?: DocumentSession } = {}) {
+    const s = opts.session;
+    if (s && s !== this.session) {
+      if (!this.sessions.includes(s)) return;
+      s.selections.set(s.doc, [...s.selectedIds]);
+      const before = s.doc;
+      s.history.execute(label, edit, opts.coalesce);
+      if (s.doc !== before) s.hasDocument = true;
+      // Its tab shows the unsaved change.
+      this.windows.renderTabs();
+      return;
+    }
+    this.transform.apply();
+    this.modal?.apply();
+    this.session.selections.set(this.doc, [...this.selectedIds]);
+    const before = this.doc;
+    this.history.execute(label, edit, opts.coalesce);
+    if (this.doc !== before) {
+      this.hasDocument = true;
+      this.collectGarbage();
+    }
+    this.update();
+  }
+  private gcCounter = 0;
+  collectGarbage(extra: Iterable<string> = []) {
+    // Tile cleanup walks every reachable state; amortize it over several edits.
+    if (++this.gcCounter % 8 && this.assets.tiles.size < 4096) return;
+    this.session.collectTiles(extra);
+  }
+  editLayer(label: string, edit: (l: Layer) => void, operation: LockOperation = 'all') {
+    if (!this.layer) return;
+    if (this.selectedIds.size > 1) {
+      this.message('Select a single layer for this adjustment.');
+      return;
+    }
+    if (layerLock(this.doc.layers, this.selected, operation)) {
+      this.message('Unlock this layer to edit it.');
+      return;
+    }
+    this.command(label, (d) => {
+      const l = findLayer(d.layers, this.selected);
+      if (l) edit(l);
+    });
+  }
+  /** Bake pending pixel-layer moves (origin shift) and transforms (resample). */
+  normalizePixelLayers(doc: PhotoDocument, assets: Assets, before?: PhotoDocument) {
+    const layers = allLayers(doc.layers);
+    // Guard every local history edit, including insertions outside the Layers
+    // menu. Older projects above the editing limit can still be edited or
+    // reduced; only further growth is refused, before history is committed.
+    if (before && layers.length > MAX_LAYERS && layers.length > allLayers(before.layers).length)
+      throw new Error(`A document can contain up to ${MAX_LAYERS} layers.`);
+    for (const l of layers) {
+      if (l.textData) bakeTextScale(l);
+      if (l.kind !== 'pixel' || !l.pixels) continue;
+      const kind = pixelTransformKind(l);
+      if (kind === 'translate') commitPixelTranslation(l);
+      else if (kind === 'resample') commitPixelResample(l, assets.tiles, doc);
+      else if (!l.pixels.bounds) syncPixelTransform(l, doc);
+    }
+  }
+  async render(doc = this.doc) {
+    if (!this.renderer) return;
+    this.shown = { doc, session: this.session };
+    await this.renderer.render(doc, this.assets);
+    // Startup measurements (docs/performance.md) look for the first document frame.
+    if (this.hasDocument && !this.firstFrame) {
+      this.firstFrame = true;
+      performance.mark('photo-studio:first-document');
+    }
+  }
+  private firstFrame = false;
+  // The state last drawn on the canvas, which can be a dialog's preview.
+  private shown?: { doc: PhotoDocument; session: DocumentSession };
+  /** The document state the canvas shows (a live preview included). */
+  get shownDoc() {
+    return this.shown?.session === this.session ? this.shown.doc : this.displayDoc;
+  }
+  preview(doc: PhotoDocument) {
+    this.lastDoc = doc;
+    if (this.renderFrame) return;
+    this.renderFrame = requestAnimationFrame(() => {
+      this.renderFrame = 0;
+      const d = this.lastDoc;
+      this.windows.updateDirtyIndicators();
+      if (d) void this.render(d).catch((e) => this.message(String(e)));
+    });
+  }
+  /** Document shown on canvas: an active transform's draft or the current state. */
+  get displayDoc() {
+    return this.transform.document ?? this.modal?.document ?? this.doc;
+  }
+  update() {
+    const display = this.displayDoc;
+    const ids = [...this.selectedIds].filter((id) => findLayer(this.doc.layers, id));
+    this.selectLayers(ids.length || !this.selectedIds.size ? ids : this.doc.layers.slice(-1).map((l) => l.id));
+    if (this.editingMask && this.layer && !this.layer.maskGrid && !this.layer.pixelMask && !this.layer.mask && !this.layer.maskAsset && !this.layer.maskStrokes)
+      this.maskTarget = '';
+    const depth = this.doc.bitsPerChannel ?? 8;
+    this.el('#tab-size').textContent = `${this.doc.width} × ${this.doc.height} px`;
+    this.el('.canvas-color-mode').textContent = `${this.colorModeLabel} / ${depth}`;
+    this.el('#empty').hidden = this.hasDocument;
+    this.root.classList.toggle('no-document', !this.hasDocument);
+    // The start screen covers the document area, and the options it dims
+    // ignore the pointer: the keyboard and screen readers skip them too.
+    for (const sel of ['.document-tabs', '.canvas-area', '#tool-options']) this.el(sel).inert = !this.hasDocument;
+    this.windows.renderTabs();
+    this.options();
+    this.toolbar?.render();
+    this.syncColorChips();
+    this.view();
+    this.overlay();
+    this.dock?.update();
+    for (const hook of this.updateHooks) hook(this);
+    this.preview(display);
+  }
+  get colorModeLabel() {
+    return modeLabel(this.doc);
+  }
+  // Extra text for document tabs (for example the color feature's proof name).
+  tabBadges: ((s: DocumentSession) => string)[] = [];
+  options() {
+    const tool = this.activeTool;
+    this.el('#tool-name').textContent = tool?.label ?? '';
+    this.el('#tool-icon').innerHTML = tool ? svg(tool.icon, 18) : '';
+    const el = this.el('#tool-options');
+    // Keep native controls mounted when their tool can refresh them in place.
+    const focused = document.activeElement as HTMLInputElement | null;
+    const keep = focused && el.contains(focused) && focused.id ? { id: focused.id, start: caret(focused, 'selectionStart'), end: caret(focused, 'selectionEnd') } : this.optionsTab ? { id: this.optionsTab.id, start: null, end: null } : undefined;
+    if (this.transform.active || !tool?.updateOptions?.({ e: this, el })) {
+      let html = '';
+      if (this.transform.active)
+        html = `<span class="transform-label">Free Transform</span><label class="transform-setting"><input id="transform-proportions" type="checkbox" ${this.transform.shared || this.transform.proportional ? 'checked' : ''} ${this.transform.shared ? 'disabled' : ''}>Proportions</label><label class="transform-setting"><input id="transform-snap" type="checkbox" ${this.transform.snapping ? 'checked' : ''}>Snap</label><button data-command="edit.transform-cancel" class="icon-button" title="Cancel transform (Escape)" aria-label="Cancel">${svg('ban', 16)}</button><button data-command="edit.transform-commit" class="icon-button transform-apply" title="Commit transform (Enter)" aria-label="Apply">${svg('check', 16)}</button>`;
+      else html = tool?.options?.(this) ?? '';
+      el.innerHTML = html;
+      if (!this.transform.active) tool?.bindOptions?.({ e: this, el });
+    }
+    if (keep) {
+      const again = el.querySelector<HTMLInputElement>(`#${CSS.escape(keep.id)}`);
+      again?.focus({ preventScroll: true });
+      if (again && keep.start !== null && keep.end !== null && caret(again, 'selectionStart') !== null) again.setSelectionRange(keep.start, keep.end);
+      // A change committed by Tab rebuilds the bar while the browser moves the
+      // focus to a control that no longer exists; finish the move here.
+      const tab = this.optionsTab;
+      if (tab?.id === keep.id)
+        setTimeout(() => {
+          const now = document.activeElement;
+          if (now && now !== document.body && now.isConnected && now !== again) return;
+          const list = [...el.querySelectorAll<HTMLElement>('input,select,button,textarea,[tabindex]')].filter((x) => x.tabIndex >= 0 && !(x as HTMLInputElement).disabled && x.offsetParent !== null);
+          const at = list.findIndex((x) => x.id === keep.id);
+          list[at + (tab.back ? -1 : 1)]?.focus({ preventScroll: true });
+        });
+    }
+    this.el('#viewport').dataset.tool = this.tool;
+    this.el('#viewport').style.cursor = this.cursorFor ? this.cursorFor(tool) : (tool?.cursor?.(this) ?? '');
+  }
+  // The viewport cursor for a tool (Preferences → Cursors).
+  cursorFor?: (tool: Tool | undefined) => string;
+  setTool(id: string) {
+    if (!tools.has(id)) return;
+    if (this.transform.dragging && !this.transform.active) this.transform.cancel();
+    if (id !== this.tool) this.transform.apply();
+    void this.activeTool?.deactivate?.(this, 'tool');
+    this.tool = id;
+    this.toolbar?.select(id);
+    this.activeTool?.activate?.(this);
+    this.options();
+    this.toolbar?.render();
+    this.overlay();
+    // Tool-dependent panels (brush settings, character) follow the active tool.
+    this.dock?.update();
+    emitActivity({ kind: 'tool', id });
+  }
+  // ----- Colors -----
+  setForeground(hex: string) {
+    this.color = hex;
+    this.colorControls?.sync(hex);
+    this.el<HTMLInputElement>('#foreground').value = hex;
+    this.syncColorChips();
+    this.dock?.update();
+  }
+  setBackground(hex: string) {
+    this.background = hex;
+    this.syncColorChips();
+    this.dock?.update();
+  }
+  private syncColorChips() {
+    this.el('.fg-chip').style.background = this.color;
+    this.el('.bg-chip').style.background = this.background;
+  }
+  // ----- View -----
+  /** Size of the active window's image area in CSS pixels. */
+  viewportSize() {
+    const r = this.el('#viewport').getBoundingClientRect();
+    return { width: r.width || 800, height: r.height || 600 };
+  }
+  fit(view = this.activeView) {
+    const size = view === this.activeView ? this.viewportSize() : this.windows.viewportSize(view);
+    const doc = view.session.doc;
+    view.zoom = fitZoom({ rotation: view.rotation, aspect: this.viewAspect(view.session) }, doc, size);
+    view.pan = { x: 0, y: 0 };
+    this.view();
+    this.overlay();
+  }
+  zoomAt(z: number, vx?: number, vy?: number) {
+    const next = zoomAround(this.activeView.state(), z, this.viewportSize(), vx, vy);
+    this.zoom = next.zoom;
+    this.pan = next.pan;
+    this.view();
+    this.overlay();
+    this.windows.renderTabs();
+  }
+  private zoomAnimation = 0;
+  /** Zoom from a command or a click: animated (General → Animated zoom), and
+   * resizing a floating window to the image (Zoom resizes floating windows).
+   * With `centerOn`, that document point moves to the window center. */
+  zoomBy(z: number, vx?: number, vy?: number, centerOn?: [number, number]) {
+    cancelAnimationFrame(this.zoomAnimation);
+    const target = Math.max(0.01, Math.min(64, z));
+    const from = this.zoom,
+      c0 = centerPoint(this.activeView.state(this.viewAspect()), this.doc);
+    const apply = (k: number) => {
+      const zoom = from * (target / from) ** k;
+      if (!centerOn) return this.zoomAt(zoom, vx, vy);
+      const c: [number, number] = [c0[0] + (centerOn[0] - c0[0]) * k, c0[1] + (centerOn[1] - c0[1]) * k];
+      this.zoom = zoom;
+      this.pan = panToCenter(this.activeView.state(this.viewAspect()), this.doc, c[0], c[1]);
+      this.view();
+      this.overlay();
+      this.windows.renderTabs();
+    };
+    const done = () => {
+      if (this.preferences.zoomResizesWindows && this.activeView.floating) this.windows.fitFloating(this.activeView);
+    };
+    if (!this.preferences.animatedZoom || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      apply(1);
+      return done();
+    }
+    const start = performance.now(),
+      duration = 150;
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      apply(1 - (1 - t) ** 3);
+      if (t < 1) this.zoomAnimation = requestAnimationFrame(step);
+      else done();
+    };
+    this.zoomAnimation = requestAnimationFrame(step);
+  }
+  /** Document → viewport-local matrix of the active window. */
+  viewMatrix() {
+    return viewMatrix(this.activeView.state(this.viewAspect()), this.doc, this.viewportSize());
+  }
+  /** Document coordinates of a client point. */
+  docPoint(clientX: number, clientY: number): [number, number] {
+    const rect = this.el('#viewport').getBoundingClientRect();
+    const m = this.viewMatrix(),
+      x = clientX - rect.left,
+      y = clientY - rect.top;
+    // Unrotated views divide directly, so whole pixels stay exact.
+    if (!m[1] && !m[2]) return [(x - m[4]) / m[0], (y - m[5]) / m[3]];
+    return applyAffine(invertAffine(m), x, y);
+  }
+  /** Client coordinates of a document point. */
+  clientPoint(x: number, y: number): [number, number] {
+    const rect = this.el('#viewport').getBoundingClientRect();
+    const [px, py] = applyAffine(this.viewMatrix(), x, y);
+    return [rect.left + px, rect.top + py];
+  }
+  /** Tools → Overscroll off: keep the image inside the window (centered
+   * along an axis where it is smaller than the window). */
+  private clampPan() {
+    const size = this.viewportSize(),
+      m = this.viewMatrix(),
+      W = this.doc.width,
+      H = this.doc.height;
+    const pts = [applyAffine(m, 0, 0), applyAffine(m, W, 0), applyAffine(m, 0, H), applyAffine(m, W, H)];
+    const fit = (lo: number, hi: number, span: number) => (hi - lo <= span ? (span - (hi - lo)) / 2 - lo : lo > 0 ? -lo : hi < span ? span - hi : 0);
+    const dx = fit(Math.min(...pts.map((p) => p[0])), Math.max(...pts.map((p) => p[0])), size.width);
+    const dy = fit(Math.min(...pts.map((p) => p[1])), Math.max(...pts.map((p) => p[1])), size.height);
+    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) this.pan = { x: this.pan.x + dx, y: this.pan.y + dy };
+  }
+  view() {
+    if (!this.preferences.overscroll && this.hasDocument) this.clampPan();
+    const stage = this.el('#stage');
+    stage.style.width = `${this.doc.width}px`;
+    stage.style.height = `${this.doc.height}px`;
+    const aspect = this.viewAspect();
+    stage.style.transform = stageTransform(this.activeView.state(aspect));
+    // Nearest-neighbour magnification shows individual pixels when zoomed in.
+    stage.classList.toggle('pixelated', this.zoom * Math.min(1, aspect) >= 2);
+    this.root.classList.toggle('view-rotated', !!this.rotation || this.activeView.flip);
+    const zoomField = this.el<HTMLInputElement>('#zoom-label');
+    if (document.activeElement !== zoomField) zoomField.value = `${Math.round(this.zoom * 1000) / 10}%`;
+    const zoomTab = this.root.querySelector('#tab-zoom');
+    if (zoomTab) zoomTab.textContent = `@ ${Math.round(this.zoom * 100)}%`;
+    const viewport = this.el('#viewport');
+    this.root.classList.toggle('rulers-hidden', !this.preferences.showRulers);
+    if (this.preferences.showRulers) {
+      const unit = rulerUnitScale(this.doc, this.preferences.rulerUnits);
+      // A flipped view has the image's left edge, the ruler's zero, on the right.
+      const sx = this.zoom * aspect * (this.activeView.flip ? -1 : 1);
+      setMarkup(this.el('#ruler-x'), rulerTicks(viewport.clientWidth, viewport.clientWidth / 2 + this.pan.x - (this.doc.width * sx) / 2, sx, false, unit.x));
+      setMarkup(this.el('#ruler-y'), rulerTicks(viewport.clientHeight, viewport.clientHeight / 2 + this.pan.y - (this.doc.height * this.zoom) / 2, this.zoom, true, unit.y));
+    }
+    this.screenOverlay();
+    for (const hook of this.viewHooks) hook(this);
+  }
+  // Called after the view changes (zoom, scroll, rotation, window size).
+  viewHooks: ((e: Editor) => void)[] = [];
+  overlay(doc = this.displayDoc) {
+    const svgEl = this.root.querySelector<SVGSVGElement>('#overlay')!;
+    svgEl.setAttribute('viewBox', `0 0 ${doc.width} ${doc.height}`);
+    let html = '';
+    for (const draw of overlays.values()) {
+      try {
+        html += draw(this);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    html += this.activeTool?.overlay?.(this) ?? '';
+    html += this.transform.overlay(doc);
+    setMarkup(svgEl, html);
+  }
+  // Screen-space overlay (fixed pixel sizes regardless of zoom): brush cursors.
+  screenOverlayContent = '';
+  screenOverlay() {
+    const el = this.root.querySelector<SVGSVGElement>('#screen-overlay');
+    if (el) setMarkup(el, this.screenOverlayContent);
+  }
+  pointerInfo?: CanvasPointer;
+  updatePointerInfo(p: CanvasPointer | undefined) {
+    this.pointerInfo = p;
+    const el = this.el('#pointer-info');
+    el.textContent = p ? `X ${Math.floor(p.x)}  Y ${Math.floor(p.y)}` : '';
+    for (const hook of this.pointerHooks) hook(this, p);
+  }
+  pointerHooks: ((e: Editor, p: CanvasPointer | undefined) => void)[] = [];
+  // Run after preferences change (features/preferences applies them).
+  preferenceHooks: ((e: Editor) => void)[] = [];
+  /** Store the preferences; false when the browser refused (full or blocked storage). */
+  savePreferences() {
+    try {
+      localStorage.setItem(PREFERENCES_KEY, JSON.stringify(this.preferences));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /** Save and apply changed preferences. */
+  preferencesChanged() {
+    this.savePreferences();
+    for (const hook of this.preferenceHooks) hook(this);
+    this.update();
+  }
+  // ----- Input -----
+  private bind() {
+    watchOptionTips(this.el('#tool-options'));
+    scrollableRow(this.el('#tool-options'));
+    scrollableRow(this.el('.document-tabs'));
+    this.el('#tool-options').addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key !== 'Tab') return;
+        const id = (e.target as HTMLElement).id;
+        this.optionsTab = id ? { id, back: e.shiftKey } : undefined;
+        setTimeout(() => (this.optionsTab = undefined));
+      },
+      true,
+    );
+    this.root.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const close = target.closest<HTMLElement>('[data-close-view]');
+      if (close) {
+        const v = this.views.find((x) => x.id === close.dataset.closeView);
+        // Closing waits for the task, which may be working on that document.
+        if (v && this.busy) this.message(`“${v.session.doc.name}” can be closed when the current task finishes.`);
+        else if (v) {
+          // Closed from the keyboard, the focus moves to the tab shown now
+          // instead of falling to the page with the removed button.
+          const keyboard = document.activeElement === close;
+          void this.closeView(v).then((closed) => {
+            const now = document.activeElement;
+            if (!closed || !keyboard || close.isConnected || (now && now !== document.body && now.isConnected)) return;
+            this.root.querySelector<HTMLElement>('.document-tab.focused')?.focus({ preventScroll: true });
+          });
+        }
+        e.stopPropagation();
+        return;
+      }
+      const tab = target.closest<HTMLElement>('[data-view]');
+      if (tab) {
+        const v = this.views.find((x) => x.id === tab.dataset.view);
+        if (v) void this.showView(v);
+        return;
+      }
+      if (this.busy) return;
+      const cmd = target.closest<HTMLElement>('[data-command]');
+      if (cmd && !target.closest('.menubar,.context-menu') && !(cmd as HTMLButtonElement).disabled) {
+        // Alt-click runs a button's alternative (New Layer with options).
+        void this.runCommand((e.altKey && cmd.dataset.altCommand) || cmd.dataset.command!, cmd.dataset.arg);
+        return;
+      }
+    });
+    // Document tabs from the keyboard: arrows (Home, End) move to another
+    // document's tab and show it, Enter or Space shows the focused one. The keys
+    // stay here, so arrows never also nudge a layer.
+    this.root.addEventListener('keydown', (e) => {
+      const tab = (e.target as HTMLElement).closest<HTMLElement>('.document-tab[data-view]');
+      if (!tab || (e.target as HTMLElement).closest('.tab-close') || e.metaKey || e.ctrlKey || e.altKey || !['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', ' '].includes(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const tabs = [...tab.parentElement!.querySelectorAll<HTMLElement>('.document-tab[data-view]')];
+      const at = tabs.indexOf(tab);
+      const next = e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs.at(-1)! : e.key === 'ArrowLeft' ? tabs[(at - 1 + tabs.length) % tabs.length] : e.key === 'ArrowRight' ? tabs[(at + 1) % tabs.length] : tab;
+      const v = this.views.find((x) => x.id === next.dataset.view);
+      if (!v) return;
+      void this.showView(v).then(() => this.root.querySelector<HTMLElement>(`.document-tab[data-view="${CSS.escape(v.id)}"]`)?.focus({ preventScroll: true }));
+    });
+    this.root.addEventListener('change', (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.id === 'transform-proportions') this.transform.proportional = t.checked;
+      if (t.id === 'transform-snap') this.transform.snapping = t.checked;
+      if (t.id === 'theme') this.setTheme(t.value);
+    });
+    this.el<HTMLInputElement>('#foreground').addEventListener('input', (e) => this.setForeground((e.target as HTMLInputElement).value));
+    this.el<HTMLInputElement>('#file-input').onchange = (e) => {
+      const input = e.target as HTMLInputElement;
+      const files = Array.from(input.files ?? []);
+      input.value = '';
+      this.openWhenFree(files, false);
+    };
+    const viewport = this.el('#viewport');
+    const workspace = this.el('.workspace');
+    workspace.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer?.types.includes('Files')) return;
+      // Load the decoders while a file is dragged over the workspace.
+      import('./features/files/open').catch(() => {});
+      e.preventDefault();
+      viewport.classList.add('dragover');
+    });
+    workspace.addEventListener('dragleave', () => viewport.classList.remove('dragover'));
+    workspace.addEventListener('drop', (e) => {
+      if (!e.dataTransfer?.files.length) return;
+      e.preventDefault();
+      viewport.classList.remove('dragover');
+      const files = Array.from(e.dataTransfer.files);
+      // Dropping onto the canvas places files into the open document.
+      const place = this.hasDocument && !!(e.target as HTMLElement).closest('#viewport');
+      this.openWhenFree(files, place);
+    });
+    viewport.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (this.hasDocument && this.activeTool?.contextMenu?.(this, e)) return;
+      void import('./app/menubar').then(({ showContextMenu }) => showContextMenu(this, e.clientX, e.clientY, this.canvasContextMenu()));
+    });
+    document.addEventListener('keydown', (e) => this.keyDown(e));
+    // Spring-loaded tools: using the tool or holding its key returns to the previous tool on release.
+    viewport.addEventListener('pointerdown', () => this.springTools.use(), true);
+    document.addEventListener('keyup', (e) => this.springRelease(e.code));
+    window.addEventListener('blur', () => this.springTools.cancel());
+    // Window resizes, panel changes and document window layouts all resize the viewport.
+    new ResizeObserver(() => {
+      this.view();
+      this.overlay();
+    }).observe(viewport);
+    window.addEventListener('beforeunload', (e) => {
+      if (import.meta.env.DEV) return;
+      if (this.sessions.some((s) => s.dirty || s.hasPendingEdits) || this.hasPendingChanges()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+    this.setTheme(this.preferences.theme);
+  }
+  /** Open (or place) dropped or picked files; while a task runs they wait
+   * for it, so they are neither lost nor mixed into its edits. */
+  private openWhenFree(files: File[], place: boolean) {
+    if (!files.length) return;
+    const open = () =>
+      this.run(async () => {
+        const { openFiles } = await import('./features/files/open');
+        await openFiles(this, files.map((blob) => ({ blob, name: blob.name })), place && this.hasDocument);
+      });
+    if (!this.busy) return void open();
+    const names = files.length === 1 ? files[0].name : `${files.length} files`;
+    this.message(`${names} ${files.length === 1 ? 'opens' : 'open'} when the current task finishes.`);
+    void (async () => {
+      while (this.busy) await this.idle;
+      await open();
+    })();
+  }
+  canvasContextMenu() {
+    const items: string[] = [];
+    if (this.doc.selectionMask || this.doc.selection)
+      items.push('select.deselect', 'select.inverse', 'select.modify-feather', 'select.mask-refine', '-', 'select.save', 'edit.via-copy', 'layer.via-copy', 'layer.via-cut', '-', 'edit.fill', 'edit.stroke', 'edit.context-fill', '-', 'edit.free-transform', 'select.transform-selection');
+    else items.push('select.all', 'select.reselect', '-', 'layer.new', 'layer.duplicate', '-', 'edit.free-transform', 'layer.merge-down', 'layer.flatten');
+    return items;
+  }
+  setTheme(theme: string) {
+    if (!['dark', 'medium', 'light', 'system'].includes(theme)) return;
+    document.documentElement.dataset.theme = theme;
+    this.el<HTMLSelectElement>('#theme').value = theme;
+    if (this.preferences.theme === theme) return;
+    this.preferences.theme = theme as Preferences['theme'];
+    this.preferencesChanged();
+  }
+  // The options-bar control Tab is leaving (see options()).
+  private optionsTab?: { id: string; back: boolean };
+  private keyDown(e: KeyboardEvent) {
+    const target = e.target as HTMLElement;
+    // puter.js's user menu takes its own keys (they arrive from the element).
+    if (target.closest('puter-user-menu')) return;
+    if (this.menubar?.isOpen && target.closest('.menubar')) return;
+    if (this.transform.active && target.matches('#transform-proportions,#transform-snap') && ['Enter', 'Escape'].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === 'Escape') this.transform.cancel();
+      else this.transform.apply();
+      this.el('#viewport').focus({ preventScroll: true });
+      return;
+    }
+    // A checkbox or radio button (focused by the click that set it) keeps only
+    // the keys it uses itself; tool keys and shortcuts such as Select All work.
+    const toggle = target instanceof HTMLInputElement && (target.type === 'checkbox' || target.type === 'radio');
+    const typing = toggle ? [' ', 'Enter', 'Tab'].includes(e.key) || e.key.startsWith('Arrow') : !!target.closest('input,textarea,select,[contenteditable="true"],[role="slider"]');
+    if (target.closest('dialog')) return;
+    // A modal dialog makes the workspace behind it inert: keys that reach the
+    // page (the focus fell off a control the dialog rebuilt, or Tab left its
+    // last control) stay out of the workspace, and Tab goes back into the dialog.
+    if (modalDialogOpen()) return;
+    // Tab navigates focused controls (and the start screen, where the focus
+    // starts on the page); the canvas keeps its hide-panels shortcut.
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey && (target.closest('button,a[href],[tabindex]:not(#viewport)') || !this.hasDocument)) return;
+    const shortcut = eventShortcut(e);
+    // Modified shortcuts work while typing in numeric fields; bare keys never do,
+    // and the field keeps the keys that edit its own text (select all, copy, cut, paste).
+    // Text fields also keep their own undo, redo and line deletion: Mod+Backspace
+    // in a search box must not fill the layer.
+    const textField = target instanceof HTMLInputElement && /^(text|search|url|email|password|tel)$/.test(target.type);
+    if (typing && (!shortcut.startsWith('Mod+') || /^Mod\+[ACVX]$/.test(shortcut) || target.closest('textarea,[contenteditable="true"]') || (textField && /^Mod\+(Shift\+)?(Z|Y|Backspace|Delete)$/.test(shortcut)))) return;
+    if (this.busy) return;
+    if (this.activeTool?.keyDown?.(this, e)) {
+      e.preventDefault();
+      return;
+    }
+    if ((this.transform.active || this.transform.dragging) && (e.key === 'Escape' || (e.key === 'Enter' && !target.closest('button')))) {
+      e.preventDefault();
+      if (e.key === 'Escape') this.transform.cancel();
+      else this.transform.apply();
+      return;
+    }
+    // While a tool gesture is in progress (the button is still down) shortcuts
+    // wait: undoing, switching tools or closing the document under a stroke
+    // would leave the stroke without its end.
+    if (this.toolBusy) {
+      if (shortcut.startsWith('Mod+')) e.preventDefault();
+      return;
+    }
+    if (this.tool === 'move' && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.startsWith('Arrow')) {
+      e.preventDefault();
+      if (!this.transform.dragging) {
+        const step = e.shiftKey ? 10 : 1;
+        this.transform.nudge(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0, { pixels: true });
+      }
+      return;
+    }
+    const matches = [...commands.values()].filter((c) => {
+      const list = Array.isArray(c.shortcut) ? c.shortcut : c.shortcut ? [c.shortcut] : [];
+      return list.some((s) => platformShortcut(s) === shortcut);
+    });
+    if (matches.length) {
+      e.preventDefault();
+      // A shortcut shared by commands for different situations runs the one that applies.
+      const c = matches.find((m) => !m.enabled || m.enabled(this)) ?? matches[0];
+      void this.runCommand(c.id);
+      return;
+    }
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && /^[A-Z]$/.test(shortcut.replace('Shift+', ''))) {
+      // Holding a tool key keeps the tool only while it is down: auto-repeat
+      // must neither cycle the group nor restart the hold.
+      if (e.repeat && this.springTools.repeat(e.code)) {
+        e.preventDefault();
+        return;
+      }
+      const previous = this.tool;
+      if (this.toolbar.shortcut(shortcut.replace('Shift+', ''), e.shiftKey)) {
+        e.preventDefault();
+        if (!e.repeat) this.springTools.press(e.code, previous, this.tool, performance.now());
+        return;
+      }
+    }
+    // [ and ] change the brush size of brush-like tools, with Shift the hardness.
+    const brush = this.activeTool?.brush;
+    if (brush && !e.metaKey && !e.ctrlKey && !e.altKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+      e.preventDefault();
+      const up = e.code === 'BracketRight';
+      const b = brush.get(this);
+      if (e.shiftKey) brush.set(this, { hardness: Math.max(0, Math.min(1, b.hardness + (up ? 0.25 : -0.25))) });
+      else brush.set(this, { size: brushSizeStep(b.size, up) });
+      return;
+    }
+    // Number keys set the opacity of painting tools or the selected layers:
+    // 1–9 for 10–90%, 0 for 100%, two digits typed quickly for an exact value.
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && /^Digit\d$/.test(e.code)) {
+      const n = Number(e.code.slice(5));
+      const now = performance.now();
+      const quick = this.digit && now - this.digit.at < 700;
+      const percent = quick ? this.digit!.n * 10 + n : n === 0 ? 100 : n * 10;
+      this.digit = quick ? undefined : { n, at: now };
+      const hook = this.settings.numberKey as ((value: number, shift: boolean) => boolean) | undefined;
+      if (hook) {
+        if (hook(percent / 100, e.shiftKey)) e.preventDefault();
+      } else if (!e.shiftKey && this.hasDocument && this.selectedIds.size) {
+        e.preventDefault();
+        void this.runCommand('layer.set-opacity', percent / 100);
+      }
+    }
+  }
+  // The last number key, for two-digit opacity values.
+  private digit?: { n: number; at: number };
+  private springTools = new SpringTools();
+  private springRelease(code: string) {
+    const back = this.springTools.release(code, performance.now());
+    if (!back || !tools.has(back) || modalDialogOpen()) return;
+    // A stroke still in progress ends with the temporary tool first.
+    const restore = () => {
+      if (this.toolBusy) window.setTimeout(restore, 50);
+      else if (this.tool !== back) this.setTool(back);
+    };
+    restore();
+  }
+}
+
+/** A text field's caret position, or null where there is none (number fields, buttons). */
+function caret(el: HTMLInputElement, which: 'selectionStart' | 'selectionEnd'): number | null {
+  try {
+    return typeof el[which] === 'number' ? el[which] : null;
+  } catch {
+    return null;
+  }
+}
+
+// Markup last written by setMarkup, per element. Most updates redraw rulers
+// and overlays with identical markup; skipping those avoids re-parsing SVG.
+const markup = new WeakMap<Element, string>();
+function setMarkup(el: Element, html: string) {
+  if (markup.get(el) === html) return;
+  markup.set(el, html);
+  el.innerHTML = html;
+}
+
+/** Stored preferences, upgraded from older storage keys. */
+function modalDialogOpen() {
+  try {
+    return !!document.querySelector('dialog:modal');
+  } catch {
+    // Without :modal support, any open dialog counts.
+    return !!document.querySelector('dialog[open]');
+  }
+}
+function readPreferences(): Preferences {
+  const get = (key: string) => {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  };
+  const prefs = loadPreferences(get(PREFERENCES_KEY), { theme: get('photo-theme'), fontPreview: get('photo-studio-font-preview-size') });
+  try {
+    localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
+    localStorage.removeItem('photo-theme');
+    localStorage.removeItem('photo-studio-font-preview-size');
+  } catch {
+    /* Preferences are optional. */
+  }
+  return prefs;
+}

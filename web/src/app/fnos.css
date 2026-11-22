@@ -1,0 +1,24 @@
+.top-actions .fnos-support-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; padding: 2px; color: #ff6547; }
+.fnos-support-button svg { width: 18px; height: 18px; fill: currentColor; }
+.fnos-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 26px; border: 1px solid var(--border, #41434b); border-radius: 12px; overflow: auto; box-sizing: border-box; color: var(--text, #e9e9ed); background: var(--panel, #23252b); }
+.fnos-dialog::backdrop { background: rgb(0 0 0 / 62%); }
+.fnos-dialog form { min-width: 0; }
+.fnos-dialog-heading { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.fnos-dialog h2 { margin: 0 0 14px; font-size: 22px; line-height: 1.4; }
+.fnos-dialog p { line-height: 1.8; }
+.fnos-close { min-width: 30px; font-size: 24px; line-height: 24px; }
+.fnos-support-dialog { width: min(420px, calc(100vw - 32px)); max-width: min(420px, calc(100vw - 32px)); padding: 20px; }
+.fnos-intro { margin: 0 0 16px; }
+.fnos-payments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.fnos-payments figure { margin: 0; min-width: 0; }
+.fnos-payments figcaption { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.fnos-qr-plate { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 1; background: #fff; padding: 10px; border-radius: 8px; box-sizing: border-box; }
+.fnos-qr-plate img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.fnos-qr-plate p { color: #333; }
+.fnos-payments a { display: inline-block; margin-top: 10px; font-size: 12px; color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.fnos-dialog .fnos-payment-note { font-size: 12px; opacity: .78; margin: 16px 0 0; }
+.fnos-dialog .dialog-actions { margin-top: 16px; }
+@media (max-width: 400px) {
+  .fnos-support-dialog { padding: 16px; }
+  .fnos-payments { gap: 12px; }
+}

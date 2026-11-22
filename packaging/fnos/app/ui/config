@@ -1,0 +1,18 @@
+{
+  ".url": {
+    "photostudio.Application": {
+      "title": "Photo Studio",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "gatewayPrefix": "/app/photostudio",
+      "gatewaySocket": "photostudio.sock",
+      "url": "/app/photostudio/",
+      "allUsers": true,
+      "fileTypes": [
+        "psd", "psb", "photo", "png", "jpg", "jpeg", "webp", "avif",
+        "gif", "bmp", "dib", "tif", "tiff", "svg", "ico", "cur", "tga",
+        "pnm", "ppm", "pgm", "pbm", "pam"
+      ]
+    }
+  }
+}

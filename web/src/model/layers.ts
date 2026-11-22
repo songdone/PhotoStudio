@@ -1,0 +1,199 @@
+import {
+  allLayers,
+  containerOf,
+  findLayer,
+  insertLayerAt,
+  layer,
+  MAX_LAYERS,
+  type Layer,
+  type PhotoDocument,
+} from './document';
+import { layerLocked } from './transform';
+import { layerLock, ownLock, type LockOperation } from './locks';
+
+/** Selected ancestors own their descendants, so every layer is edited at most once. */
+export function selectedRoots(layers: Layer[], ids: ReadonlySet<string>): Layer[] {
+  return layers.flatMap((l) => (ids.has(l.id) ? [l] : selectedRoots(l.children, ids)));
+}
+export function visibleRows(layers: Layer[], collapsed: ReadonlySet<string>): Layer[] {
+  return [...layers]
+    .reverse()
+    .flatMap((l) => [l, ...(collapsed.has(l.id) ? [] : visibleRows(l.children, collapsed))]);
+}
+export function assertEditable(doc: PhotoDocument, roots: Layer[], operation: LockOperation = 'all') {
+  if (
+    roots.some((l) => layerLock(doc.layers, l.id, operation) || allLayers(l.children).some((c) => ownLock(c, operation)))
+  )
+    throw new Error('Unlock the selected layers and their groups first.');
+}
+function assertTree(layers: Layer[], depth = 0, inFrame = false) {
+  if (depth > 12) throw new Error('Groups can be nested up to 12 levels.');
+  if (depth === 0 && allLayers(layers).length > MAX_LAYERS) throw new Error(`A document can contain up to ${MAX_LAYERS} layers.`);
+  for (const l of layers) {
+    if (l.artboard && depth > 0) throw new Error('Artboards stay at the top level of the layer stack.');
+    if (l.frame && inFrame) throw new Error('Frames cannot contain other frames.');
+    assertTree(l.children, depth + 1, inFrame || !!l.frame);
+  }
+}
+/** Put each copy directly above its original. A copy of a clipping group's
+ * base joins the group (clipped to the original) instead of becoming the
+ * base of the layers clipped to the original. */
+export function placeDuplicates(doc: PhotoDocument, originals: Layer[], copies: Layer[]) {
+  originals.forEach((l, i) => {
+    const list = containerOf(doc.layers, l.id)!;
+    insertLayerAt(list, list.findIndex((item) => item.id === l.id) + 1, copies[i]);
+  });
+}
+/** Create Clipping Mask / Release Clipping Mask on `id`. Releasing a layer
+ * in the middle of a clipping group also releases the clipped layers above
+ * it, which would otherwise clip to the released layer. */
+export function toggleClipping(doc: PhotoDocument, id: string) {
+  const list = containerOf(doc.layers, id);
+  const l = findLayer(doc.layers, id);
+  if (!list || !l) return;
+  if (!l.clipped) {
+    l.clipped = true;
+    return;
+  }
+  for (let i = list.indexOf(l); list[i]?.clipped; i++) delete list[i].clipped;
+}
+// The Background layer stays at the bottom of the stack until it is
+// converted (Layer → New → Layer from Background).
+const BACKGROUND_STAYS = 'The Background layer stays at the bottom. Convert it with Layer from Background first.';
+export type DropPosition = 'above' | 'below' | 'inside';
+export function moveLayers(
+  doc: PhotoDocument,
+  ids: ReadonlySet<string>,
+  targetId: string | null,
+  position: DropPosition,
+) {
+  const roots = selectedRoots(doc.layers, ids);
+  if (!roots.length) return;
+  assertEditable(doc, roots);
+  const target = targetId ? findLayer(doc.layers, targetId) : undefined;
+  if (targetId && !target) throw new Error('The destination layer no longer exists.');
+  if (target && allLayers(roots).some((l) => l.id === target.id))
+    throw new Error('Drop outside the selected layers to move them.');
+  if (target && layerLocked(doc.layers, target.id))
+    throw new Error('Unlock the destination group or layer first.');
+  if (position === 'inside' && target?.kind !== 'group')
+    throw new Error('Only groups can contain layers.');
+  if (roots.some((l) => l.background) || (target?.background && position === 'below')) throw new Error(BACKGROUND_STAYS);
+  for (const l of roots) {
+    const list = containerOf(doc.layers, l.id)!;
+    list.splice(list.indexOf(l), 1);
+  }
+  const list = !target
+    ? doc.layers
+    : position === 'inside'
+      ? target.children
+      : containerOf(doc.layers, target.id)!;
+  const index = !target
+    ? list.length
+    : position === 'inside'
+      ? list.length
+      : list.indexOf(target) + (position === 'above' ? 1 : 0);
+  // Dropped under a clipped layer, the layers join its clipping group (as a
+  // new layer inserted there does), so the clipped layers keep their base.
+  const joins = !!list[index]?.clipped;
+  list.splice(index, 0, ...roots);
+  if (joins) for (const l of roots) if (!l.artboard) l.clipped = true;
+  assertTree(doc.layers);
+}
+export function groupLayers(doc: PhotoDocument, ids: ReadonlySet<string>): string | undefined {
+  const roots = selectedRoots(doc.layers, ids);
+  if (!roots.length) return;
+  assertEditable(doc, roots);
+  if (roots.some((l) => l.background)) throw new Error(BACKGROUND_STAYS);
+  const list = containerOf(doc.layers, roots[0].id)!;
+  if (roots.some((l) => containerOf(doc.layers, l.id) !== list))
+    throw new Error('Move the selected layers into the same group before grouping them.');
+  const topIndex = list.indexOf(roots.at(-1)!);
+  const insertion = list.slice(0, topIndex).filter((l) => !roots.includes(l)).length;
+  const group = layer('group', 'Group', doc.width, doc.height);
+  // Pass Through, as for New Group: grouping keeps how the layers blend with
+  // the layers below the group (a Normal group would composite them alone).
+  group.blend = 'pass through';
+  group.children = roots;
+  // Layers clipped to a base outside the selection: the group takes their
+  // place in the clipping group, so they still show only inside the base.
+  if (roots.every((l) => l.clipped)) {
+    group.clipped = true;
+    for (const l of roots) delete l.clipped;
+  }
+  for (const l of roots) list.splice(list.indexOf(l), 1);
+  list.splice(insertion, 0, group);
+  assertTree(doc.layers);
+  return group.id;
+}
+export function reorderLayers(doc: PhotoDocument, ids: ReadonlySet<string>, up: boolean) {
+  const roots = selectedRoots(doc.layers, ids);
+  assertEditable(doc, roots);
+  const selected = new Set(roots.map((l) => l.id));
+  const lists = new Set(roots.map((l) => containerOf(doc.layers, l.id)!));
+  for (const list of lists) {
+    const indices = Array.from({ length: list.length }, (_, i) => i);
+    if (up) indices.reverse();
+    for (const i of indices) {
+      const j = i + (up ? 1 : -1);
+      if (selected.has(list[i].id) && list[j] && !selected.has(list[j].id) && !list[j].locked && !list[i].background && !list[j].background)
+        [list[i], list[j]] = [list[j], list[i]];
+    }
+  }
+}
+/** Layer → Arrange. Selected layers keep their order among themselves (a
+ * selected layer never passes another), and none goes below the Background. */
+export function arrangeLayers(doc: PhotoDocument, roots: Layer[], where: 'front' | 'forward' | 'backward' | 'back') {
+  const selected = new Set(roots.map((l) => l.id));
+  const lists = new Set(roots.map((l) => containerOf(doc.layers, l.id)!));
+  for (const list of lists) {
+    const floor = list[0]?.background ? 1 : 0;
+    const picked = list.filter((l) => selected.has(l.id) && !l.background);
+    if (where === 'front' || where === 'back') {
+      const rest = list.filter((l) => !picked.includes(l));
+      rest.splice(where === 'front' ? rest.length : floor, 0, ...picked);
+      list.splice(0, list.length, ...rest);
+      continue;
+    }
+    const up = where === 'forward';
+    const indices = list.map((_, i) => i);
+    if (up) indices.reverse();
+    for (const i of indices) {
+      const j = i + (up ? 1 : -1);
+      if (j < floor || j >= list.length || !picked.includes(list[i]) || selected.has(list[j].id)) continue;
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+  }
+}
+/** Layer → Arrange → Reverse: the selected layers of each stack trade
+ * places, top for bottom. The Background stays at the bottom. */
+export function reverseLayers(doc: PhotoDocument, ids: ReadonlySet<string>) {
+  const picked = allLayers(doc.layers).filter((l) => ids.has(l.id) && !l.background);
+  assertEditable(doc, picked, 'position');
+  const set = new Set(picked);
+  const walk = (list: Layer[]) => {
+    const idx = list.map((l, i) => (set.has(l) ? i : -1)).filter((i) => i >= 0);
+    const reversed = idx.map((i) => list[i]).reverse();
+    idx.forEach((i, k) => (list[i] = reversed[k]));
+    list.forEach((l) => walk(l.children));
+  };
+  walk(doc.layers);
+}
+/** The layer stack after Merge Visible: `merged` replaces the visible layers.
+ * Hidden layers survive, also those inside visible groups (which are merged
+ * away), and stay below or above the merged layer as they were stacked
+ * relative to the topmost visible layer. */
+export function mergeVisibleStack(layers: Layer[], merged: Layer): Layer[] {
+  const hidden: Layer[] = [];
+  let below = -1;
+  const walk = (list: Layer[]) => {
+    for (const l of list) {
+      if (!l.visible) hidden.push(l);
+      else if (l.kind === 'group') walk(l.children);
+      else below = hidden.length;
+    }
+  };
+  walk(layers);
+  if (below < 0) below = hidden.length;
+  return [...hidden.slice(0, below), merged, ...hidden.slice(below)];
+}

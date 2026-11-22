@@ -1,0 +1,243 @@
+import type { Editor } from '../editor';
+import { escapeXML } from '../model/assets';
+import { svg } from './icons';
+import { toolTitle } from './option-tips';
+import { tools, type Tool } from './registry';
+import { showContextMenu } from './menubar';
+import { EXTRA_SLOT, shownSlots, simplifiedSlots, slotOrder, slotTools, toolSlot, toolbarLayout } from './toolbar-layout';
+
+// Toolbar slots in display order; tools register into a slot by group.
+export const toolGroups = [
+  'move', 'marquee', 'lasso', 'select', 'crop', 'frame', 'eyedropper', 'heal', 'brush', 'stamp',
+  'history-brush', 'eraser', 'fill', 'focus', 'tone', 'pen', 'type', 'path-select', 'shape', 'hand', 'zoom',
+];
+// Separators between families of slots.
+const separatorsBefore = new Set(['crop', 'heal', 'pen', 'hand']);
+
+/** The menu a toolbar button shows on right-click or a long press. */
+function buttonMenu(target: HTMLElement): string[] | undefined {
+  if (target.closest('[data-command="view.cycle-screen-mode"]')) return ['view.screen-standard', 'view.screen-full-menus', 'view.screen-full'];
+  if (target.closest('.quick-mask-button')) return ['select.quick-mask', 'select.quick-mask-options'];
+  return undefined;
+}
+/** Tools shown in a slot, after toolbar customization (Edit → Toolbar). */
+export function groupTools(group: string): Tool[] {
+  const all = [...tools.values()];
+  const own = slotTools(all, group, toolbarLayout());
+  if (group !== EXTRA_SLOT) return own;
+  // Slots hidden by Assisted mode list their tools here too.
+  const shown = simplifiedSlots();
+  return shown ? [...own, ...all.filter((t) => { const s = toolSlot(t, toolbarLayout()); return s !== EXTRA_SLOT && toolGroups.includes(s) && !shown.has(s); })] : own;
+}
+
+export class Toolbar {
+  // Last used tool of each group is the one shown in its slot.
+  private current = new Map<string, string>();
+  constructor(
+    private e: Editor,
+    private el: HTMLElement,
+  ) {
+    // Double-clicking the Quick Mask button opens its options (the first click
+    // already entered Quick Mask mode, so the second does not leave it).
+    el.addEventListener('click', (ev) => {
+      if (ev.detail !== 2 || !(ev.target as HTMLElement).closest('.quick-mask-button')) return;
+      ev.stopPropagation();
+      void e.runCommand('select.quick-mask-options');
+    });
+    el.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement;
+      const flyoutItem = target.closest<HTMLElement>('[data-flyout-tool]');
+      if (flyoutItem) {
+        this.closeFlyout();
+        e.setTool(flyoutItem.dataset.flyoutTool!);
+        return;
+      }
+      const slot = target.closest<HTMLElement>('[data-slot]');
+      if (slot?.dataset.slot === EXTRA_SLOT) this.openFlyout(EXTRA_SLOT, slot);
+      else if (slot) e.setTool(slot.dataset.tool!);
+    });
+    // Double-clicking the Hand tool fits the image on screen; the Zoom tool shows it at 100%.
+    el.addEventListener('dblclick', (ev) => {
+      const tool = (ev.target as HTMLElement).closest<HTMLElement>('[data-slot]')?.dataset.tool;
+      const command = tool === 'hand' ? 'view.fit' : tool === 'zoom' ? 'view.actual-pixels' : undefined;
+      if (command && e.hasDocument) void e.runCommand(command);
+    });
+    el.addEventListener('contextmenu', (ev) => {
+      const menu = buttonMenu(ev.target as HTMLElement);
+      if (menu) {
+        ev.preventDefault();
+        showContextMenu(e, ev.clientX, ev.clientY, menu);
+        return;
+      }
+      const slot = (ev.target as HTMLElement).closest<HTMLElement>('[data-slot]');
+      if (!slot) {
+        if (!(ev.target as HTMLElement).closest('button')) {
+          ev.preventDefault();
+          showContextMenu(e, ev.clientX, ev.clientY, ['edit.toolbar']);
+        }
+        return;
+      }
+      ev.preventDefault();
+      this.openFlyout(slot.dataset.slot!, slot);
+    });
+    // Hovering a tool starts loading its implementation.
+    el.addEventListener('pointerover', (ev) => {
+      const id = (ev.target as HTMLElement).closest<HTMLElement>('[data-tool],[data-flyout-tool]');
+      if (id) tools.get(id.dataset.tool ?? id.dataset.flyoutTool ?? '')?.prefetch?.();
+    });
+    // A long press opens the group's flyout on touch and pen input.
+    let timer = 0;
+    el.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      const menu = buttonMenu(ev.target as HTMLElement);
+      if (menu) {
+        // A long press shows the menu; the click that follows is swallowed.
+        const button = (ev.target as HTMLElement).closest<HTMLElement>('button')!;
+        timer = window.setTimeout(() => {
+          const r = button.getBoundingClientRect();
+          showContextMenu(e, r.right + 4, r.top, menu);
+          button.addEventListener('click', (c) => c.stopPropagation(), { once: true, capture: true });
+        }, 450);
+        return;
+      }
+      const slot = (ev.target as HTMLElement).closest<HTMLElement>('[data-slot]');
+      if (!slot) return;
+      timer = window.setTimeout(() => this.openFlyout(slot.dataset.slot!, slot), 450);
+    });
+    const cancel = () => clearTimeout(timer);
+    el.addEventListener('pointerup', cancel);
+    el.addEventListener('pointerleave', cancel);
+    // The keys a toolbar button handles stay out of the workspace, where the
+    // arrows would nudge the layer with the Move tool.
+    el.addEventListener('keydown', (ev) => {
+      const open = ev.key === 'ArrowRight' || (ev.key === 'Enter' && ev.altKey);
+      // Like a slot's flyout, a button's list (screen modes, Quick Mask) opens
+      // from the keyboard too; Enter alone runs the button.
+      const menu = open ? buttonMenu(ev.target as HTMLElement) : undefined;
+      if (menu) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const r = (ev.target as HTMLElement).closest('button')!.getBoundingClientRect();
+        showContextMenu(e, r.right + 4, r.top, menu);
+        return;
+      }
+      const slot = (ev.target as HTMLElement).closest<HTMLElement>('[data-slot]');
+      if (slot && open) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.openFlyout(slot.dataset.slot!, slot);
+      } else if (slot && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const slots = [...el.querySelectorAll<HTMLElement>('[data-slot]')];
+        const at = slots.indexOf(slot);
+        slots[(at + (ev.key === 'ArrowDown' ? 1 : -1) + slots.length) % slots.length].focus();
+      }
+    });
+    document.addEventListener('pointerdown', (ev) => {
+      if (!(ev.target as HTMLElement).closest('.tool-flyout')) this.closeFlyout();
+    });
+  }
+  private toolFor(group: string) {
+    const list = groupTools(group);
+    const id = this.current.get(group);
+    return list.find((t) => t.id === id) ?? list[0];
+  }
+  select(id: string) {
+    const t = tools.get(id);
+    if (t) this.current.set(toolSlot(t, toolbarLayout()), id);
+  }
+  render() {
+    const active = this.e.tool;
+    let html = '';
+    for (const group of shownSlots(slotOrder(toolGroups, toolbarLayout()))) {
+      const t = this.toolFor(group);
+      if (!t) continue;
+      if (separatorsBefore.has(group) && html) html += '<div class="tool-separator" role="separator"></div>';
+      const many = groupTools(group).length > 1;
+      const more = many ? `\n${t.key ? `Shift+${t.key.toUpperCase()} or right-click` : 'Right-click'} for the other tools in this slot` : '';
+      html += `<button class="tool-slot ${many ? 'has-flyout' : ''}" data-slot="${group}" data-tool="${t.id}" aria-label="${escapeXML(t.label)}" title="${escapeXML(toolTitle(t) + more)}" aria-pressed="${groupTools(group).some((g) => g.id === active) && t.id === active}">${svg(t.icon)}</button>`;
+    }
+    // Tools moved out of the toolbar stay one click away in the Extra Tools
+    // slot, which also leads to Edit Toolbar (so it is always there).
+    const extra = groupTools(EXTRA_SLOT);
+    const current = extra.find((t) => t.id === active);
+    const extraLabel = extra.length ? `Extra tools${current ? `: ${escapeXML(current.label)}` : ''}` : 'Edit toolbar';
+    html += `<div class="tool-separator" role="separator"></div><button class="tool-slot extra-tools-slot ${extra.length ? 'has-flyout' : ''}" data-slot="${EXTRA_SLOT}" data-tool="${current?.id ?? ''}" aria-haspopup="menu" aria-label="${extraLabel}" title="${extra.length ? `Extra tools${current ? ` — ${escapeXML(current.label)}` : ''}\nClick for these tools and Edit Toolbar` : 'Edit Toolbar\nChoose which tools show and in what order'}" aria-pressed="${!!current}">${svg(current?.icon ?? 'ellipsis')}</button>`;
+    const slots = this.el.querySelector<HTMLElement>('.tool-slots')!;
+    // The toolbar redraws after every edit: keep unchanged markup, and the
+    // keyboard focus on the slot that had it.
+    if (this.markup === html) return;
+    this.markup = html;
+    const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-slot]');
+    const slot = focused && slots.contains(focused) ? focused.dataset.slot : undefined;
+    slots.innerHTML = html;
+    if (slot) slots.querySelector<HTMLElement>(`[data-slot="${CSS.escape(slot)}"]`)?.focus({ preventScroll: true });
+  }
+  private markup = '';
+  private openFlyout(group: string, anchor: HTMLElement) {
+    this.closeFlyout();
+    const list = groupTools(group);
+    const extra = group === EXTRA_SLOT;
+    if (!extra && list.length < 2) return;
+    const pop = document.createElement('div');
+    pop.className = 'tool-flyout';
+    pop.setAttribute('role', 'menu');
+    pop.innerHTML = list
+      .map((t) => `<button role="menuitemradio" aria-checked="${t.id === this.e.tool}" data-flyout-tool="${t.id}" title="${escapeXML(toolTitle(t))}">${svg(t.icon)}<span>${escapeXML(t.label)}</span><kbd>${t.key ?? ''}</kbd></button>`)
+      .join('') + (extra ? `${list.length ? '<div class="tool-flyout-separator" role="separator"></div>' : ''}<button role="menuitem" data-flyout-command="edit.toolbar">${svg('settings', 16)}<span>Edit Toolbar…</span></button>` : '');
+    // Fixed to the page: inside the scrollable toolbar it would scroll it sideways.
+    document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    pop.style.position = 'fixed';
+    pop.style.top = `${Math.min(r.top, innerHeight - pop.offsetHeight - 4)}px`;
+    pop.style.left = `${r.right + 4}px`;
+    pop.addEventListener('click', (ev) => {
+      const command = (ev.target as HTMLElement).closest<HTMLElement>('[data-flyout-command]');
+      if (command) {
+        this.closeFlyout();
+        void this.e.runCommand(command.dataset.flyoutCommand!);
+        return;
+      }
+      const item = (ev.target as HTMLElement).closest<HTMLElement>('[data-flyout-tool]');
+      if (!item) return;
+      this.closeFlyout();
+      this.e.setTool(item.dataset.flyoutTool!);
+      // Chosen from the keyboard (a click without a pointer): the focus goes
+      // back to the slot, which the redraw may have replaced.
+      if (ev.detail === 0) this.el.querySelector<HTMLElement>(`[data-slot="${CSS.escape(group)}"]`)?.focus();
+    });
+    pop.addEventListener('keydown', (ev) => {
+      const items = [...pop.querySelectorAll<HTMLElement>('button')];
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      if (ev.key === 'ArrowDown') items[(at + 1) % items.length].focus();
+      else if (ev.key === 'ArrowUp') items[(at - 1 + items.length) % items.length].focus();
+      else if (ev.key === 'Home') items[0].focus();
+      else if (ev.key === 'End') items[items.length - 1].focus();
+      else if (ev.key === 'Escape' || ev.key === 'Tab') {
+        // Tab closes it too, so the flyout never stays open behind the focus.
+        this.closeFlyout();
+        anchor.focus();
+      } else return;
+      ev.preventDefault();
+    });
+    pop.querySelector<HTMLElement>('[aria-checked="true"]')?.focus() ?? pop.querySelector<HTMLElement>('button')?.focus();
+  }
+  closeFlyout() {
+    document.querySelector('.tool-flyout')?.remove();
+  }
+  /** Shortcut handling: a key selects its group's current tool; Shift+key cycles. */
+  shortcut(key: string, shift: boolean) {
+    const matching = [...tools.values()].filter((t) => t.key?.toUpperCase() === key.toUpperCase());
+    if (!matching.length) return false;
+    const group = toolSlot(matching[0], toolbarLayout());
+    const list = groupTools(group).filter((t) => t.key?.toUpperCase() === key.toUpperCase());
+    const currentId = this.toolFor(group)?.id;
+    let next = list.find((t) => t.id === currentId) ?? list[0];
+    // With Tools → Use Shift key for tool switch off, the plain key cycles too.
+    const cycle = shift || !this.e.preferences.shiftToolSwitch;
+    if (cycle && this.e.tool && list.some((t) => t.id === this.e.tool)) next = list[(list.findIndex((t) => t.id === this.e.tool) + 1) % list.length];
+    this.e.setTool(next.id);
+    return true;
+  }
+}

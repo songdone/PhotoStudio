@@ -1,0 +1,4 @@
+#!/bin/sh
+# Static package: no host changes or external dependencies to prepare.
+set -eu
+exit 0

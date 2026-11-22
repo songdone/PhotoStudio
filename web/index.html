@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Edit, color-grade, and composite images in your browser. Open layered PSD files, save projects, or export to common image formats."
+    />
+    <meta name="theme-color" content="#181a1e" />
+    <title>Photo Studio</title>
+    <link rel="icon" href="%BASE_URL%favicon-16x16.png" type="image/png" sizes="16x16" />
+    <link rel="icon" href="%BASE_URL%favicon-32x32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="%BASE_URL%favicon-48x48.png" type="image/png" sizes="48x48" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="%BASE_URL%manifest.json" />
+    <!-- The startup screen also works before the editor stylesheet loads. -->
+    <style>
+      #startup:not([hidden]) { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; overflow: auto; padding: 24px; background: #181a1e; color: #f1f2f4; font: 15px/1.6 system-ui, sans-serif; }
+      #startup > div { width: 100%; max-width: 28rem; }
+      #startup h1 { margin: 0 0 8px; font-size: 22px; }
+      #startup p { margin: 0 0 14px; }
+      #startup a { color: #a7caff; }
+    </style>
+  </head>
+  <body>
+    <div id="app" inert></div>
+    <main id="startup" data-state="loading">
+      <div>
+        <h1>Photo Studio</h1>
+        <p id="startup-status" role="status">Loading the editor…</p>
+        <a href="">Reload</a>
+        <noscript><p>Enable JavaScript to open Photo Studio. / 请启用 JavaScript 后重新打开 Photo Studio。</p></noscript>
+      </div>
+    </main>
+    <script src="%BASE_URL%startup.js"></script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

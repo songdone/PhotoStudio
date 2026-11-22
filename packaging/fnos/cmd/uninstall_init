@@ -1,0 +1,4 @@
+#!/bin/sh
+# Do not remove package variable data; fnOS owns the uninstall retention policy.
+set -eu
+exit 0

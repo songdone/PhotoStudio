@@ -1,0 +1,216 @@
+// Editor glue for the export pipeline: read document/layer pixels back from
+// the compositor, build the color/metadata context and remember settings.
+import type { Editor } from '../../editor';
+import type { Layer, PhotoDocument } from '../../model/document';
+import type { Assets } from '../../model/assets';
+import { decodeIccProfile } from '../../model/psd-resources';
+import { download, preferredFileName } from '../../persistence/puter';
+import { emitAppEvent } from '../../app/app-events';
+import { documentProfile, floatTo16 } from './color';
+import { defaultSettings, encodeExport, exportBaseName, exportFileName, formatInfo, prepareExport, type ExportContext, type ExportSettings, type SourceImage } from './encode';
+import { exportSvg } from './svg-export';
+import { encodeGif, type GifEncodeFrame, type GifEncodeOptions } from '../../imaging/codecs/gif';
+import { printPng } from './print-encode';
+
+const KEY = 'photo-studio-export';
+export function loadSettings(): ExportSettings {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? '{}');
+    const s = { ...defaultSettings, ...(saved && typeof saved === 'object' ? saved : {}) } as ExportSettings;
+    if (!(s.format in formatInfo)) s.format = 'png';
+    return s;
+  } catch {
+    return { ...defaultSettings };
+  }
+}
+export function saveSettings(s: ExportSettings) {
+  try {
+    // Canvas size is specific to one document.
+    localStorage.setItem(KEY, JSON.stringify({ ...s, canvasWidth: 0, canvasHeight: 0 }));
+  } catch {
+    /* Optional. */
+  }
+}
+
+export function isDeep(doc: PhotoDocument) {
+  return (doc.bitsPerChannel ?? 8) > 8;
+}
+// Untagged float documents are linear; their pixels must be encoded for export.
+export function mustConvert(doc: PhotoDocument) {
+  return doc.bitsPerChannel === 32 && !(doc.iccProfile && !doc.iccUntaggedProfile);
+}
+
+/** Composite pixels (document color space): 8-bit, or 16-bit for deep documents. */
+export async function documentSource(e: Editor, doc: PhotoDocument = e.doc, assets: Assets = e.assets): Promise<SourceImage> {
+  const samples = await e.renderer.documentPixels({ ...doc, selection: null }, assets);
+  return samplesToSource(samples, doc.width, doc.height);
+}
+export function samplesToSource(samples: Uint8Array | Float32Array, width: number, height: number): SourceImage {
+  if (samples instanceof Float32Array) return { width, height, data: floatTo16(samples) };
+  return { width, height, data: new Uint8ClampedArray(samples.buffer, samples.byteOffset, samples.length) };
+}
+/** One top-level layer composited alone (keeping its opacity and blend). */
+export async function layerSource(e: Editor, l: Layer, doc: PhotoDocument = e.doc, assets: Assets = e.assets): Promise<SourceImage> {
+  return documentSource(e, { ...doc, layers: [{ ...l, visible: true, clipped: false }] }, assets);
+}
+
+export function exportContext(doc: PhotoDocument): ExportContext {
+  const profile = documentProfile(doc);
+  const icc = doc.iccProfile && !doc.iccUntaggedProfile && profile ? decodeIccProfile(doc.iccProfile) : undefined;
+  const r = doc.resolution;
+  const dpi = r ? (r.horizontalResolutionUnit === 'PPCM' ? r.horizontalResolution * 2.54 : r.horizontalResolution) : undefined;
+  return { profile, icc, dpi, info: doc.info };
+}
+export function effectiveSettings(doc: PhotoDocument, s: ExportSettings): ExportSettings {
+  return mustConvert(doc) ? { ...s, convertSrgb: true } : s;
+}
+
+/** Encode a document with the settings. `source` may be cached by callers. */
+export async function encodeDocument(e: Editor, settings: ExportSettings, doc: PhotoDocument = e.doc, source?: SourceImage, assets: Assets = e.assets) {
+  const s = effectiveSettings(doc, settings);
+  const ctx = exportContext(doc);
+  if (s.format === 'svg') {
+    const text = await exportSvg(e, doc, s, assets);
+    const bytes = new TextEncoder().encode(text);
+    return { bytes, width: 0, height: 0, mime: formatInfo.svg.mime, prepared: undefined };
+  }
+  // A source made here is handed to the export worker instead of copied.
+  const src = source ?? (await documentSource(e, doc, assets));
+  const { bytes, prepared } = await encodeOffThread(src, s, ctx, true, !source);
+  return { bytes, width: prepared!.width, height: prepared!.height, mime: formatInfo[s.format].mime, prepared };
+}
+
+export function bytesBlob(bytes: Uint8Array, mime: string) {
+  return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime });
+}
+/** Quick export in the format, with the settings and to the place chosen in
+ * Preferences → Export. */
+export async function quickExport(e: Editor, format: ExportSettings['format'] = e.preferences.quickExportFormat) {
+  const { quickExportFolder, quickExportSettings } = await import('./quick-export');
+  const s = quickExportSettings(e.preferences, format, loadSettings());
+  const out = await encodeDocument(e, s);
+  const name = preferredFileName(exportFileName(exportBaseName(e.doc), format));
+  const { withProvenance } = await import('../provenance/export');
+  out.bytes = await withProvenance(e.session, out.bytes, name, e.preferences.provenanceAttach, { prompts: e.preferences.provenancePrompts, width: out.width, height: out.height });
+  const blob = bytesBlob(out.bytes, out.mime);
+  const where = e.preferences.quickExportLocation;
+  let dir = quickExportFolder(where, e.session.storage.path);
+  if (where !== 'ask' && !dir) {
+    download(blob, name);
+    e.message(`${formatInfo[format].label} exported (${formatBytes(out.bytes.length)})`);
+    void emitAppEvent('export', e.session);
+    return;
+  }
+  const { cloudWrite, joinPath, pickCloudFolder } = await import('./cloud');
+  if (!dir) {
+    // The Puter picker never settles when dismissed: do not hold the editor busy.
+    e.release();
+    dir = (await pickCloudFolder()).path;
+  }
+  const item = await cloudWrite(joinPath(dir, name), blob, { dedupeName: true });
+  e.message(`${formatInfo[format].label} exported to ${item.path} (${formatBytes(out.bytes.length)})`);
+  void emitAppEvent('export', e.session);
+}
+export function formatBytes(n: number) {
+  return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// One shared export worker; jobs are matched by ID. Falls back to the main
+// thread where module workers are unavailable.
+let worker: Worker | undefined;
+let jobId = 0;
+const pending = new Map<number, { resolve: (v: { bytes: Uint8Array; prepared?: SourceImage }) => void; reject: (e: Error) => void }>();
+function exportWorker() {
+  if (worker) return worker;
+  worker = new Worker(new URL('./encode.worker.ts', import.meta.url), { type: 'module', name: 'export' });
+  worker.onmessage = (ev: MessageEvent<{ id: number; bytes?: Uint8Array; prepared?: SourceImage; error?: string }>) => {
+    const job = pending.get(ev.data.id);
+    if (!job) return;
+    pending.delete(ev.data.id);
+    if (ev.data.error !== undefined) job.reject(new Error(ev.data.error));
+    else job.resolve({ bytes: ev.data.bytes!, prepared: ev.data.prepared });
+  };
+  worker.onerror = (ev) => {
+    for (const job of pending.values()) job.reject(new Error(ev.message || 'The export worker failed.'));
+    pending.clear();
+    worker?.terminate();
+    worker = undefined;
+  };
+  return worker;
+}
+/** prepareExport + encodeExport in the export worker. With `transfer`, the
+ * source's pixels move to the worker (no copy; `src` is unusable after) and
+ * are prepared in place. */
+export async function encodeOffThread(
+  src: SourceImage,
+  s: ExportSettings,
+  ctx: ExportContext,
+  keepPrepared = false,
+  transfer = false,
+): Promise<{ bytes: Uint8Array; prepared?: SourceImage }> {
+  let w: Worker;
+  try {
+    w = exportWorker();
+  } catch {
+    const prepared = prepareExport(src, s, ctx);
+    return { bytes: await encodeExport(prepared, s, ctx), prepared };
+  }
+  const id = ++jobId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    // Only a buffer holding just these pixels is handed over.
+    const { data } = src;
+    const owned = transfer && data.byteOffset === 0 && data.byteLength === data.buffer.byteLength;
+    const moved = owned ? [data.buffer as ArrayBuffer] : [];
+    w.postMessage({ id, src, settings: s, ctx, keepPrepared, owned }, moved);
+  });
+}
+/** prepareExport (resample, convert) in the export worker. With `transfer`,
+ * the source's pixels move there (`src` is unusable after). */
+export async function prepareOffThread(src: SourceImage, s: ExportSettings, ctx: ExportContext, transfer = false): Promise<SourceImage> {
+  let w: Worker;
+  try {
+    w = exportWorker();
+  } catch {
+    return prepareExport(src, s, ctx);
+  }
+  const id = ++jobId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve: (v) => resolve(v.prepared!), reject });
+    const { data } = src;
+    const owned = transfer && data.byteOffset === 0 && data.byteLength === data.buffer.byteLength;
+    w.postMessage({ id, src, settings: s, ctx, keepPrepared: true, owned, prepareOnly: true }, owned ? [data.buffer as ArrayBuffer] : []);
+  });
+}
+/** Animated GIF encoding in the export worker. */
+export async function encodeGifOffThread(frames: GifEncodeFrame[], options: GifEncodeOptions): Promise<Uint8Array> {
+  let w: Worker;
+  try {
+    w = exportWorker();
+  } catch {
+    return encodeGif(frames, options);
+  }
+  const id = ++jobId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve: (v) => resolve(v.bytes), reject });
+    w.postMessage({ id, gif: { frames, options } });
+  });
+}
+/** File → Print's PNG (see print-encode.ts) in the export worker. The
+ * source's pixels move to the worker when it owns its buffer (`src` is then
+ * unusable). */
+export async function printPngOffThread(src: SourceImage, ctx: ExportContext): Promise<Uint8Array> {
+  let w: Worker;
+  try {
+    w = exportWorker();
+  } catch {
+    return printPng(src, ctx);
+  }
+  const id = ++jobId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve: (v) => resolve(v.bytes), reject });
+    const { data } = src;
+    const owned = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength;
+    w.postMessage({ id, print: { src, ctx, owned } }, owned ? [data.buffer as ArrayBuffer] : []);
+  });
+}

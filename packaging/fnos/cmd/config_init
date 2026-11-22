@@ -1,0 +1,4 @@
+#!/bin/sh
+# This static application needs no installation settings.
+set -eu
+exit 0

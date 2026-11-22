@@ -1,0 +1,245 @@
+import { expect, test, type Page } from '@playwright/test';
+import { boot, canvasClick, canvasDrag, idle, openImage, tool } from './helpers';
+
+// On-canvas text editing with the Horizontal Type tool.
+test.beforeEach(async ({ page }) => {
+  await boot(page);
+  await openImage(page, 400, 300, '#ffffff');
+  await tool(page, 'Horizontal Type Tool');
+});
+
+async function caret(page: Page) {
+  return page.evaluate(async () => {
+    // The editor's own module instance (a direct import can be a second copy after hot updates).
+    const m = (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType;
+    const s = m.currentSession()!;
+    const { plainText } = await import('./src/imaging/text/model.ts');
+    return { text: plainText(s.data.content), anchor: s.anchor, focus: s.focus, x: m.sessionLayout(window.photoStudio)!.caretRect(s.focus).x };
+  });
+}
+
+test('arrow keys move the caret on screen through right-to-left text', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.insertText('שלום');
+  // The caret ends after the last letter, at the word's left end.
+  const end = await caret(page);
+  expect(end.focus).toBe(4);
+  await page.keyboard.press('ArrowRight');
+  const right = await caret(page);
+  expect(right.focus).toBe(3);
+  expect(right.x).toBeGreaterThan(end.x);
+  await page.keyboard.press('ArrowLeft');
+  expect((await caret(page)).focus).toBe(4);
+  // Shift+Right selects the last letter; Left collapses to the selection's left end.
+  await page.keyboard.press('Shift+ArrowRight');
+  expect(await caret(page)).toMatchObject({ anchor: 4, focus: 3 });
+  await page.keyboard.press('ArrowLeft');
+  expect(await caret(page)).toMatchObject({ anchor: 4, focus: 4 });
+});
+
+test('an IME composition is one undo step and ends the redo history', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.type('ab cd');
+  // Undo the last word, then compose over a selection of "ab".
+  await page.keyboard.press('Meta+z');
+  expect((await caret(page)).text).toBe('ab ');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.keyboard.press('Shift+ArrowRight');
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+  await cdp.send('Input.imeSetComposition', { text: 'にほ', selectionStart: 2, selectionEnd: 2 });
+  await cdp.send('Input.insertText', { text: '日本' });
+  await expect.poll(async () => (await caret(page)).text).toBe('日本 ');
+  // Redo has nothing left to bring back: the composition replaced it.
+  await page.keyboard.press('Meta+Shift+z');
+  expect((await caret(page)).text).toBe('日本 ');
+  // One undo restores the selected "ab".
+  await page.keyboard.press('Meta+z');
+  expect(await caret(page)).toMatchObject({ text: 'ab ', anchor: 0, focus: 2 });
+});
+
+test('each paste is its own undo step', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.type('ab');
+  const paste = (text: string) =>
+    page.evaluate((text) => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      document.querySelector('.type-input')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, text);
+  await paste('cd');
+  await paste('ef');
+  expect((await caret(page)).text).toBe('abcdef');
+  await page.keyboard.press('Meta+z');
+  expect((await caret(page)).text).toBe('abcd');
+  await page.keyboard.press('Meta+z');
+  expect((await caret(page)).text).toBe('ab');
+});
+
+test('undoing a style chosen at the caret also stops it applying to typing', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.type('ab');
+  const runs = () =>
+    page.evaluate(() => {
+      const m = (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType;
+      return m.currentSession()!.data.content.paragraphs[0].runs.map((r) => [r.text, r.style.fauxBold]);
+    });
+  // Redo brings the caret style back.
+  await page.keyboard.press('Meta+Shift+KeyB');
+  await page.keyboard.press('Meta+z');
+  await page.keyboard.press('Meta+Shift+z');
+  await page.keyboard.type('d');
+  expect(await runs()).toEqual([['ab', false], ['d', true]]);
+  await page.keyboard.press('Meta+z');
+  await page.keyboard.press('Meta+z');
+  await page.keyboard.type('c');
+  expect(await runs()).toEqual([['abc', false]]);
+});
+
+test('cancelling Warp Text while editing leaves no undo step behind', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.type('ab');
+  await page.evaluate(() => void window.photoStudio.runCommand('type.warp'));
+  const dialog = page.locator('dialog[open] form.type-warp');
+  await dialog.locator('select[name="style"]').selectOption('flag');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType.currentSession()!.data.warp?.style)).toBe('flag');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.locator('dialog[open]')).toHaveCount(0);
+  // The first undo removes the typing, not an invisible warp step.
+  await page.keyboard.press('Meta+z');
+  expect((await caret(page)).text).toBe('');
+  await page.keyboard.press('Meta+Shift+z');
+  expect((await caret(page)).text).toBe('ab');
+});
+
+test('Edit › Undo from the menu bar undoes the last typing step, not the whole text', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.type('ab cd');
+  const labels = await page.evaluate(() => window.photoStudio.history.labels);
+  const editMenu = async (label: string) => {
+    await page.getByRole('menubar').getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await page.locator('.menubar-entry.open > .menu-pop > .menu-item').filter({ has: page.locator(':scope > .menu-label', { hasText: new RegExp(`^${label}$`) }) }).first().click();
+  };
+  await editMenu('Undo');
+  expect(await caret(page)).toMatchObject({ text: 'ab ' });
+  await editMenu('Redo');
+  expect(await caret(page)).toMatchObject({ text: 'ab cd' });
+  // Still editing: typing continues, and the document history is untouched.
+  await page.keyboard.type('e');
+  expect((await caret(page)).text).toBe('ab cde');
+  expect(await page.evaluate(() => window.photoStudio.history.labels)).toEqual(labels);
+});
+
+test('moving text with Mod-drag while editing is undoable and kept on commit', async ({ page }) => {
+  await canvasClick(page, 100, 100);
+  await page.keyboard.type('Move');
+  await page.keyboard.press('Escape');
+  await idle(page);
+  const place = () => page.evaluate(() => [Math.round(window.photoStudio.layer!.transform.x), Math.round(window.photoStudio.layer!.transform.y)]);
+  const [x0, y0] = await place();
+  // Edit the text again, then drag it by (60, 50) without changing it.
+  await canvasClick(page, x0 + 8, y0 + 12);
+  await canvasDrag(page, [[x0 + 8, y0 + 12], [x0 + 68, y0 + 62]], 6, ['ControlOrMeta']);
+  expect(await place()).toEqual([x0 + 60, y0 + 50]);
+  await page.keyboard.press('Meta+z');
+  expect(await place()).toEqual([x0, y0]);
+  await page.keyboard.press('Meta+Shift+z');
+  expect(await place()).toEqual([x0 + 60, y0 + 50]);
+  await page.keyboard.press('Escape');
+  await idle(page);
+  expect(await place()).toEqual([x0 + 60, y0 + 50]);
+  expect(await page.evaluate(() => window.photoStudio.history.labels)).toEqual(['Type Tool', 'Edit Type Layer']);
+});
+
+test('a stalled font download does not stop text editing', async ({ page }) => {
+  // Font files never arrive; new text uses a bundled family that has not loaded yet.
+  await page.route('**/*.woff2', () => {});
+  await page.evaluate(() => {
+    const m = (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType;
+    const d = m.typeDefaults(window.photoStudio);
+    d.style = { ...d.style, family: 'Crimson Pro' };
+  });
+  const [cx, cy] = await page.evaluate(() => window.photoStudio.clientPoint(100, 100));
+  await page.mouse.click(cx, cy);
+  await page.waitForFunction(() => !!(window as unknown as { photoStudioType: { session?: unknown } }).photoStudioType.session, null, { timeout: 20_000 });
+  await page.keyboard.type('ab');
+  expect((await caret(page)).text).toBe('ab');
+});
+
+test('the composition underline runs beside vertical text', async ({ page }) => {
+  await tool(page, 'Vertical Type Tool');
+  await canvasClick(page, 200, 60);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.imeSetComposition', { text: 'にほん', selectionStart: 3, selectionEnd: 3 });
+  const line = page.locator('#overlay .type-composition');
+  await expect(line).toHaveCount(1);
+  // Points of the underline: one x (a vertical line) spanning the composed column.
+  const pts = await line.evaluate((el) => (el.getAttribute('points') ?? '').trim().split(/\s+/).map((p) => p.split(',').map(Number)));
+  expect(pts.length).toBeGreaterThan(1);
+  const xs = new Set(pts.map((p) => Math.round(p[0] * 100)));
+  expect(xs.size).toBe(1);
+  expect(Math.abs(pts.at(-1)![1] - pts[0][1])).toBeGreaterThan(20);
+  await cdp.send('Input.insertText', { text: '日本' });
+});
+
+test('each resize of a paragraph frame is its own undo step', async ({ page }) => {
+  await canvasDrag(page, [[60, 60], [260, 160]], 6);
+  await page.keyboard.type('Frame');
+  const box = () => page.evaluate(() => {
+    const m = (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType;
+    const b = m.currentSession()!.data.box!;
+    return [Math.round(b.width), Math.round(b.height)];
+  });
+  const start = await box();
+  expect(start).toEqual([200, 100]);
+  await canvasDrag(page, [[260, 160], [300, 180]], 6);
+  const first = await box();
+  expect(first).toEqual([240, 120]);
+  await canvasDrag(page, [[300, 180], [320, 200]], 6);
+  expect(await box()).toEqual([260, 140]);
+  await page.keyboard.press('Meta+z');
+  expect(await box()).toEqual(first);
+  await page.keyboard.press('Meta+z');
+  expect(await box()).toEqual(start);
+});
+
+test('a click past a word broken across lines keeps the caret on the clicked line', async ({ page }) => {
+  await canvasDrag(page, [[50, 50], [130, 250]]);
+  await page.keyboard.insertText('abcdefghijklmnopqrstuvwxyz');
+  const state = () =>
+    page.evaluate(() => {
+      const m = (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType;
+      const s = m.currentSession()!;
+      const L = m.sessionLayout(window.photoStudio)!;
+      const caret = document.querySelector('.type-caret')!;
+      return { focus: s.focus, first: L.lines[0], second: L.lines[1], caretY: Number(caret.getAttribute('y2')) };
+    });
+  const s0 = await state();
+  expect(s0.first.end).toBe(s0.second.start);
+  // Right of the first line's last letter, on that line.
+  const y = await page.evaluate(() => {
+    const m = (window as unknown as { photoStudioType: typeof import('../../src/features/type/session') }).photoStudioType;
+    const L = m.sessionLayout(window.photoStudio)!;
+    return L.lines[0].y - 2;
+  });
+  await canvasClick(page, 128, y);
+  const s1 = await state();
+  expect(s1.focus).toBe(s0.first.end);
+  // The caret's bottom is on the first line, not the second.
+  expect(Math.abs(s1.caretY - (s1.first.y + s1.first.descent))).toBeLessThan(Math.abs(s1.caretY - (s1.second.y + s1.second.descent)));
+  // End on the first line does the same.
+  await page.keyboard.press('Meta+ArrowUp');
+  await page.keyboard.press('End');
+  const s2 = await state();
+  expect(s2.focus).toBe(s0.first.end);
+  expect(Math.abs(s2.caretY - (s2.first.y + s2.first.descent))).toBeLessThan(Math.abs(s2.caretY - (s2.second.y + s2.second.descent)));
+  // Down from there goes to the second line.
+  await page.keyboard.press('ArrowDown');
+  expect((await state()).focus).toBeGreaterThan(s0.first.end);
+  // Arrowing to the break shows the caret at the second line's start; Home keeps it there.
+  await page.keyboard.press('Meta+ArrowUp');
+  for (let i = 0; i < s0.first.end; i++) await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Home');
+  expect((await state()).focus).toBe(s0.first.end);
+});

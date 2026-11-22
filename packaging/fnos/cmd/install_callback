@@ -1,0 +1,5 @@
+#!/bin/sh
+# Persistent runtime state belongs exclusively to the package variable directory.
+set -eu
+umask 077
+mkdir -p "${TRIM_PKGVAR:?TRIM_PKGVAR is required}/logs" "$TRIM_PKGVAR/tmp"
