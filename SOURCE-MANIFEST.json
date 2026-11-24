@@ -52,7 +52,7 @@
     },
     {
       "path": "packaging/fnos/cmd/main",
-      "sha256": "fb45cfb0ccdd5983532c5268474258ca0612f568577687af027c28552af38236"
+      "sha256": "7d25eff44d2162c925f41fa669ce91c999449e313d5a379ead4155aac2002d36"
     },
     {
       "path": "packaging/fnos/cmd/uninstall_callback",
@@ -112,7 +112,15 @@
     },
     {
       "path": "server/gateway.go",
-      "sha256": "eb00e8fd2db0f655c1dd30975ab35860414b795e09041389764b0343fac70285"
+      "sha256": "d10cbc7fe4f54792921712af00feeebab6be948a3a47b20687066fef2776270f"
+    },
+    {
+      "path": "server/gateway_stale.go",
+      "sha256": "07fd25e7c18b4a2359b615731fe2c3523f326b8c9b061d3a7e95eb65653eb45c"
+    },
+    {
+      "path": "server/gateway_stale_test.go",
+      "sha256": "603b52da2fdb97e70d989e4736606b92aa5aeb662aa7af4af9a9300cbb92dfea"
     },
     {
       "path": "server/go.mod",

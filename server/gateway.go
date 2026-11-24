@@ -62,10 +62,11 @@ func listenGateway(path string) (*net.UnixListener, func(), error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
 		return nil, nil, errors.New("--socket requires a clean absolute path")
 	}
-	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return nil, nil, errors.New("gateway socket path already exists")
+	if existing, err := os.Lstat(path); err == nil {
+		if err := removeStaleGatewaySocket(path, existing); err != nil {
+			return nil, nil, err
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, nil, fmt.Errorf("inspect gateway socket: %w", err)
 	}
 	// This runs during startup. Set the mode at bind time so the listener is

@@ -77,8 +77,49 @@ socket_identity() {
     esac
 }
 
+other_instance_running() {
+    expected_exe=$(readlink -f "$BIN" 2>/dev/null) || return 1
+    for exe_link in /proc/[0-9]*/exe; do
+        [ "$(readlink "$exe_link" 2>/dev/null)" = "$expected_exe" ] && return 0
+    done
+    return 1
+}
+
+socket_accepts_connections() {
+    if curl --disable --noproxy '*' --unix-socket "$SOCKET" --silent --output /dev/null \
+        --max-time 2 http://localhost/app/photostudio/healthz; then
+        return 0
+    else
+        rc=$?
+    fi
+    # curl exit 7: could not connect, so nothing is listening on the socket.
+    [ "$rc" -ne 7 ]
+}
+
+# A socket left by a reboot, crash or external kill must not block later starts.
+# Remove it only when it is this package user's socket, no Photo Studio process
+# is alive and nothing accepts connections on it.
+clear_stale_socket() {
+    if read_pid && ! recorded_process_stopped; then
+        fail 'Cannot confirm the old Photo Studio PID stopped; leaving its socket untouched.'
+        return 1
+    fi
+    if [ -L "$SOCKET" ] || ! stale_socket=$(socket_identity); then
+        fail "Photo Studio socket path is occupied by an unexpected file; leaving it untouched: $SOCKET"
+        return 1
+    fi
+    if other_instance_running || socket_accepts_connections; then
+        fail "Photo Studio is still serving this socket; leaving it untouched: $SOCKET"
+        return 1
+    fi
+    if ! current_socket=$(socket_identity) || [ "$current_socket" != "$stale_socket" ]; then
+        fail "Photo Studio socket changed during cleanup; leaving it untouched: $SOCKET"
+        return 1
+    fi
+    rm -f -- "$SOCKET" || { fail "Cannot remove the stale Photo Studio socket: $SOCKET"; return 1; }
+}
+
 stop() {
-    known_socket=
     if read_pid; then
         if verified_process; then
             # Recheck identity on every iteration, including before escalation.
@@ -101,15 +142,10 @@ stop() {
             fail 'Cannot confirm Photo Studio stopped; leaving its PID file and socket untouched.'
             return 1
         fi
-        known_socket=$recorded_socket
     fi
     # Normal Go shutdown unlinks its own socket. A forced exit may leave it.
     if socket_exists; then
-        if [ -z "$known_socket" ] || ! current_socket=$(socket_identity) || [ "$current_socket" != "$known_socket" ]; then
-            fail "Cannot verify the existing Photo Studio socket belongs to a stopped service; leaving it untouched: $SOCKET"
-            return 1
-        fi
-        rm -f -- "$SOCKET" || { fail "Cannot remove the verified stale Photo Studio socket: $SOCKET"; return 1; }
+        clear_stale_socket || return 1
     fi
     rm -f -- "$PID_FILE"
 }
@@ -120,8 +156,7 @@ start() {
     [ -f "$APP_DIR/web/dist/index.html" ] || { fail 'Photo Studio frontend is missing.'; return 1; }
     command -v curl >/dev/null 2>&1 || { fail 'Photo Studio requires curl for its Unix socket health check.'; return 1; }
     if socket_exists; then
-        fail "Photo Studio socket path is already occupied; leaving it untouched: $SOCKET"
-        return 1
+        clear_stale_socket || return 1
     fi
     if read_pid && ! recorded_process_stopped; then
         fail 'Cannot confirm the old Photo Studio PID stopped; refusing to launch another instance.'
