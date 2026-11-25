@@ -66,7 +66,7 @@ export function decodeBatchLink(hash: string, known: (id: string) => boolean): B
   const format = o.format && ['jpeg', 'png', 'webp', 'tiff'].includes(o.format) ? o.format : 'jpeg';
   const quality = typeof o.quality === 'number' && o.quality >= 1 && o.quality <= 100 ? Math.round(o.quality) : 85;
   const fit =
-    o.fit && Number.isInteger(o.fit.width) && Number.isInteger(o.fit.height) && o.fit.width >= 1 && o.fit.height >= 1 && o.fit.width <= 8192 && o.fit.height <= 8192
+    o.fit && Number.isInteger(o.fit.width) && Number.isInteger(o.fit.height) && o.fit.width >= 1 && o.fit.height >= 1 && o.fit.width <= 16384 && o.fit.height <= 16384
       ? { width: o.fit.width, height: o.fit.height }
       : undefined;
   return { v: 1, name: typeof o.name === 'string' && o.name.trim() ? o.name.slice(0, 80) : 'Batch', steps, format, quality, fit };

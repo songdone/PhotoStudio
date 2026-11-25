@@ -26,7 +26,7 @@ Too many nested PSD groups.	PSD 的图层组嵌套过深。
 PSD auxiliary layer channels are not yet supported.	暂不支持 PSD 图层的辅助通道。
 Missing embedded pattern metadata.	缺少嵌入图案的元数据。
 Unsupported image format.	不支持此图像格式。
-This image exceeds the 24 megapixel or 8192 pixel limit.	图像超过 2400 万像素或单边 8192 像素的限制。
+This image exceeds the 24 megapixel or 16384 pixel limit.	图像超过 2400 万像素或单边 16384 像素的限制。
 Open a PNG, JPEG, WebP, AVIF, GIF, BMP, TIFF, ICO, TGA, Netpbm, SVG, PSD, PSB or .photo file.	请选择 PNG、JPEG、WebP、AVIF、GIF、BMP、TIFF、ICO、TGA、Netpbm、SVG、PSD、PSB 或 .photo 文件。
 Import a PNG, JPEG, WebP, AVIF, GIF, PSD, or .photo project. Animated images use their first frame.	请导入 PNG、JPEG、WebP、AVIF、GIF、PSD 或 .photo 项目。动态图像只使用第一帧。
 This browser cannot decode HEIC images. Convert the file to JPEG or PNG and open that.	此浏览器无法解码 HEIC 图像。请先转换为 JPEG 或 PNG 再打开。

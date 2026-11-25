@@ -102,7 +102,7 @@ describe('size planning', () => {
   it('validates document limits', () => {
     expect(canvasSizeProblem(8192, 2000)).toBeUndefined();
     expect(canvasSizeProblem(0, 10)).toMatch(/at least 1/);
-    expect(canvasSizeProblem(9000, 10)).toMatch(/8192/);
+    expect(canvasSizeProblem(17000, 10)).toMatch(/16384/);
     expect(canvasSizeProblem(8000, 8000)).toMatch(/megapixels/);
   });
   it('swaps sides for the other orientation only', () => {

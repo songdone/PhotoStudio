@@ -65,7 +65,7 @@ export function salvageDocument(doc: PhotoDocument, fallback?: Pick<PhotoDocumen
   try {
     assertSize(doc.width, doc.height);
   } catch {
-    const side = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 8192;
+    const side = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 16384;
     const both = side(doc.width) && side(doc.height);
     for (const k of ['width', 'height'] as const)
       if (both || !side(doc[k])) {

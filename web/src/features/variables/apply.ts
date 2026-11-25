@@ -145,7 +145,7 @@ export function placeImage(img: RGBA8, v: PixelVariable): { image: RGBA8; x: num
     r = { x: x0, y: y0, width: Math.min(place.x + place.width, b.x + b.width) - x0, height: Math.min(place.y + place.height, b.y + b.height) - y0 };
   }
   const x = Math.round(r.x), y = Math.round(r.y);
-  const w = Math.max(1, Math.min(8192, Math.round(r.x + r.width) - x)), h = Math.max(1, Math.min(8192, Math.round(r.y + r.height) - y));
+  const w = Math.max(1, Math.min(16384, Math.round(r.x + r.width) - x)), h = Math.max(1, Math.min(16384, Math.round(r.y + r.height) - y));
   const src = new OffscreenCanvas(img.width, img.height);
   src.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
   const out = new OffscreenCanvas(w, h);

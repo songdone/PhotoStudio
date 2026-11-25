@@ -121,9 +121,9 @@ function orient<T extends Uint16Array | Float32Array>(data: T, w: number, h: num
   return out;
 }
 
-// Documents hold at most 8192 pixels per side and 24 megapixels; larger files
+// Documents hold at most 16384 pixels per side and 24 megapixels; larger files
 // are refused from their headers rather than after decoding every pixel.
-const documentLimits = { maxSide: 8192, maxPixels: 24_000_000 };
+const documentLimits = { maxSide: 16384, maxPixels: 24_000_000 };
 
 async function decodeWithCodecs(bytes: Uint8Array, _name: string, opts: DecodeOptions): Promise<DecodedFile> {
   const format = sniffImageFormat(bytes);
@@ -345,8 +345,8 @@ export async function checkBrowserFile(blob: Blob) {
 export async function decodeBrowserImage(blob: Blob, raw = false): Promise<RGBA8> {
   const bitmap = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: raw ? 'none' : 'default', imageOrientation: 'from-image' });
   try {
-    if (bitmap.width > 8192 || bitmap.height > 8192 || bitmap.width * bitmap.height > 24_000_000)
-      throw new Error('This image exceeds the 24 megapixel or 8192 pixel limit.');
+    if (bitmap.width > 16384 || bitmap.height > 16384 || bitmap.width * bitmap.height > 24_000_000)
+      throw new Error('This image exceeds the 24 megapixel or 16384 pixel limit.');
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     const c = canvas.getContext('2d', { willReadFrequently: true })!;
     c.drawImage(bitmap, 0, 0);

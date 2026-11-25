@@ -114,7 +114,7 @@ export class WebGPUBackend implements Backend {
     if (!adapter) throw new Error('No WebGPU adapter');
     const device = await adapter.requestDevice({
       requiredLimits: {
-        maxTextureDimension2D: Math.min(8192, adapter.limits.maxTextureDimension2D),
+        maxTextureDimension2D: Math.min(16384, adapter.limits.maxTextureDimension2D),
         // Uploads and readbacks of large float images (16 bytes a pixel) need
         // more than the default 256 MB; larger ones go in bands of rows.
         maxBufferSize: Math.min(adapter.limits.maxBufferSize, 8192 * 8192 * 16),

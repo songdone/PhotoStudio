@@ -109,8 +109,8 @@ export function decodePng16(png: Uint8Array): Png16 | null {
     interlaced = ihdr.data[12] === 1;
   const channels = ({ 0: 1, 2: 3, 4: 2, 6: 4 } as Record<number, number>)[colorType];
   if (!channels) throw new Error('Invalid 16-bit PNG color type.');
-  if (!width || !height || width > 8192 || height > 8192 || width * height > 24_000_000)
-    throw new Error('This image exceeds the 24 megapixel or 8192 pixel limit.');
+  if (!width || !height || width > 16384 || height > 16384 || width * height > 24_000_000)
+    throw new Error('This image exceeds the 24 megapixel or 16384 pixel limit.');
   const idat = chunks.filter((c) => c.type === 'IDAT');
   let total = 0;
   for (const c of idat) total += c.data.length;

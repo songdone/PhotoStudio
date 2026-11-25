@@ -84,8 +84,8 @@ describe('Image Assets names: errors', () => {
     ['20000% a.png', /between/],
     ['0x a.png', /between 0x and 100x/],
     ['200x a.png', /between 0x and 100x/],
-    ['0x48 a.png', /1 to 8192/],
-    ['9000x10 a.png', /1 to 8192/],
+    ['0x48 a.png', /1 to 16384/],
+    ['17000x10 a.png', /1 to 16384/],
     ['?x? a.png', /at least one number/],
     ['2xx a.png', /not a size/],
     ['a.jpg101', /1 to 100/],
@@ -152,7 +152,7 @@ describe('Image Assets names: sizes and paths', () => {
     expect(outputDims(100, 50, { kind: 'box', width: 48, height: 48 }, 2)).toEqual([96, 96]);
     expect(outputDims(100, 50, undefined, 0.5)).toEqual([50, 25]);
     expect(outputDims(3, 3, { kind: 'scale', factor: 0.01 })).toEqual([1, 1]);
-    expect(outputDims(8000, 10, { kind: 'scale', factor: 4 })).toEqual([8192, 40]);
+    expect(outputDims(8000, 10, { kind: 'scale', factor: 4 })).toEqual([16384, 40]);
   });
 });
 

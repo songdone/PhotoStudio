@@ -74,8 +74,8 @@ function blendMode(v: unknown): Blend {
 /** An RGBA image from a script: { width, height, data } with 4 bytes per pixel. */
 function image(v: unknown, what = 'image'): RGBA8 & { x: number; y: number } {
   if (!isObj(v)) return fail(`${what} must be { width, height, data }.`);
-  const width = int(v.width, `${what}.width`, 1, 8192),
-    height = int(v.height, `${what}.height`, 1, 8192);
+  const width = int(v.width, `${what}.width`, 1, 16384),
+    height = int(v.height, `${what}.height`, 1, 16384);
   const d = v.data;
   const n = width * height * 4;
   let data: Uint8ClampedArray;
@@ -278,7 +278,7 @@ export class ScriptHost {
         // Check the size asked for before clamping, so the message names it.
         const w = opt(opts.width, (v) => int(v, 'width', 1, 1e9)) ?? 1200,
           h = opt(opts.height, (v) => int(v, 'height', 1, 1e9)) ?? 800;
-        if (w > 8192 || h > 8192 || w * h > 24_000_000) fail(`A ${w} × ${h} px document is too large: documents can be up to 8192 px wide or high and up to 24 megapixels.`);
+        if (w > 16384 || h > 16384 || w * h > 24_000_000) fail(`A ${w} × ${h} px document is too large: documents can be up to 16384 px wide or high and up to 24 megapixels.`);
         const { createDocument } = await import('../files/new-document');
         const bg = opts.background === undefined ? 'white' : opts.background;
         const background = bg === 'transparent' || bg === 'white' || bg === 'black' ? bg : 'custom';
@@ -521,8 +521,8 @@ export class ScriptHost {
         const s = this.session(id);
         if (!isObj(m)) fail('A mask is { x, y, width, height, data } with one byte per pixel.');
         const mo = m as Record<string, unknown>;
-        const width = int(mo.width, 'mask.width', 1, 8192),
-          height = int(mo.height, 'mask.height', 1, 8192);
+        const width = int(mo.width, 'mask.width', 1, 16384),
+          height = int(mo.height, 'mask.height', 1, 16384);
         const d = mo.data;
         const data = d instanceof Uint8Array || d instanceof Uint8ClampedArray ? new Uint8Array(d.buffer, d.byteOffset, d.length) : Array.isArray(d) ? Uint8Array.from(d as number[]) : fail('mask.data must be a Uint8Array or array.');
         if (data.length !== width * height) fail(`mask.data must have ${width * height} values.`);
@@ -753,8 +753,8 @@ async function encodeImage(img: RGBA8, o: Record<string, unknown>) {
   if (format === 'jpg') format = 'jpeg';
   if (!encodeFormats.includes(format)) fail(`format must be one of ${encodeFormats.join(', ')}.`);
   const quality = opt(o.quality, (v) => int(v, 'quality', 1, 100)) ?? 90;
-  let width = opt(o.width, (v) => int(v, 'width', 1, 8192));
-  let height = opt(o.height, (v) => int(v, 'height', 1, 8192));
+  let width = opt(o.width, (v) => int(v, 'width', 1, 16384));
+  let height = opt(o.height, (v) => int(v, 'height', 1, 16384));
   const scale = opt(o.scale, (v) => num(v, 'scale', 0.01, 16));
   if (scale !== undefined) {
     width = Math.max(1, Math.round(img.width * scale));

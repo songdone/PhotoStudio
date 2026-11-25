@@ -68,7 +68,7 @@ export function aspectSize(aspect: string, targetW: number, targetH: number): { 
 }
 
 // Upscale: document size limits.
-export const MAX_SIDE = 8192, MAX_PIXELS = 24_000_000;
+export const MAX_SIDE = 16384, MAX_PIXELS = 24_000_000;
 /** New size for a percentage, and whether it fits the document limits. */
 export function upscaleSize(w: number, h: number, percent: number) {
   const nw = Math.max(1, Math.round((w * percent) / 100)), nh = Math.max(1, Math.round((h * percent) / 100));

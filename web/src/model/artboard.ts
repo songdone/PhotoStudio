@@ -242,7 +242,7 @@ export function expandCanvasToArtboards(doc: PhotoDocument): { dx: number; dy: n
   try {
     assertSize(r.width, r.height);
   } catch {
-    throw new Error('Artboards must fit within a canvas of 8192 × 8192 pixels and 24 megapixels.');
+    throw new Error('Artboards must fit within a canvas of 16384 × 16384 pixels and 24 megapixels.');
   }
   const w = doc.width,
     h = doc.height;

@@ -39,7 +39,7 @@ export async function imageProcessor(e: Editor, batch: boolean) {
     </section>
     <section class="processor-step"><h3><span>2</span>Resize</h3>
       <label class="dialog-field checkbox-field">Resize to fit<input type="checkbox" name="resize"></label>
-      <div class="processor-row"><label class="dialog-field">W (px)<input type="number" name="w" min="1" max="8192" value="1920"></label><label class="dialog-field">H (px)<input type="number" name="h" min="1" max="8192" value="1920"></label></div>
+      <div class="processor-row"><label class="dialog-field">W (px)<input type="number" name="w" min="1" max="16384" value="1920"></label><label class="dialog-field">H (px)<input type="number" name="h" min="1" max="16384" value="1920"></label></div>
       <label class="dialog-field checkbox-field">Do not enlarge smaller images<input type="checkbox" name="noEnlarge" checked></label>
     </section>
     <section class="processor-step"><h3><span>3</span>File type</h3>

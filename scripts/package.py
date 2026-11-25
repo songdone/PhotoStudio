@@ -166,6 +166,12 @@ def check_stage(stage, arch):
             raise ValueError(f'Desktop entry {key} must be {value!r}')
     if entry.get('allUsers') is not True or 'port' in entry or 'protocol' in entry:
         raise ValueError('Desktop entry must use the all-users Unix gateway without a direct port')
+    wizard = json.loads((stage / 'wizard/install').read_text())
+    items = [item for step in wizard for item in step.get('items', [])] if isinstance(wizard, list) else []
+    if not any(item.get('type') == 'tips' for item in items) or not any(
+            item.get('field') == 'wizard_psd_notice' and any(r.get('required') for r in item.get('rules', []))
+            for item in items):
+        raise ValueError('Install wizard must show the PSD notice and require its confirmation')
     binary = stage / 'app/server/photostudio'
     if not os.access(binary, os.X_OK):
         raise ValueError('Server must be executable')
@@ -195,8 +201,14 @@ def check_package(package, stage, arch):
                         for source in (stage / 'cmd').rglob('*') if source.is_file()}
         if {name for name in files if name.startswith('cmd/')} != staged_hooks:
             raise ValueError('Packaged lifecycle hooks differ from the staged hook set')
+        staged_wizard = {source.relative_to(stage).as_posix()
+                         for source in (stage / 'wizard').rglob('*') if source.is_file()}
+        if 'wizard/install' not in staged_wizard:
+            raise ValueError('Install wizard (PSD compatibility notice) is missing from the stage')
+        if {name for name in files if name.startswith('wizard/')} != staged_wizard:
+            raise ValueError('Packaged wizard files differ from the staged wizard set')
         for name in ('ICON.PNG', 'ICON_256.PNG', 'ICON_512.PNG',
-                     'config/privilege', 'config/resource', *sorted(staged_hooks)):
+                     'config/privilege', 'config/resource', *sorted(staged_hooks), *sorted(staged_wizard)):
             if member_bytes(outer, files, name) != (stage / name).read_bytes():
                 raise ValueError(f'Packaged {name} differs from its staged source')
             if name in staged_hooks and files[name].mode & 0o111 == 0:
@@ -241,6 +253,7 @@ def ensure_unsigned_detail_icon(package, stage, allowed):
         known = {'manifest', 'ICON.PNG', 'ICON_256.PNG', 'app.tgz'}
         known.update(p.relative_to(stage).as_posix() for p in (stage / 'cmd').rglob('*') if p.is_file())
         known.update(p.relative_to(stage).as_posix() for p in (stage / 'config').iterdir() if p.is_file())
+        known.update(p.relative_to(stage).as_posix() for p in (stage / 'wizard').rglob('*') if p.is_file())
         if set(files) != known:
             raise ValueError('Unknown or signed FPK shape; refusing to supplement unsigned detail icon')
         candidate = package.with_name(package.stem + '-unsigned-local.fpk')

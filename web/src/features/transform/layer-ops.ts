@@ -378,8 +378,8 @@ export const rotateCanvas = (e: Editor, deg: number) => {
   if (quarterTurns(deg) === 0) return;
   const size = rotatedCanvasSize(e.doc.width, e.doc.height, deg);
   const label = deg === 180 ? 'Rotate Canvas 180°' : deg === 90 ? 'Rotate Canvas 90° Clockwise' : deg === -90 ? 'Rotate Canvas 90° Counter Clockwise' : 'Rotate Canvas';
-  if (size.width > 8192 || size.height > 8192 || size.width * size.height > 24_000_000) {
-    e.message('The rotated canvas would exceed 8192 pixels or 24 megapixels.');
+  if (size.width > 16384 || size.height > 16384 || size.width * size.height > 24_000_000) {
+    e.message('The rotated canvas would exceed 16384 pixels or 24 megapixels.');
     return;
   }
   return transformCanvas(e, label, rotateM(deg), size.width, size.height);

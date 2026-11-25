@@ -42,8 +42,11 @@ export function forgetFontAvailability() {
 
 // Imported text keeps its saved pixels (`asset`) until it is edited; they
 // are shown instead of a substitute face when a font is not installed.
+// Unedited imported text shows the pixels its source application drew, even
+// when the font is installed: line breaks, kerning and baseline placement
+// differ between text engines. Every text edit drops `asset`.
 export function usesTextFallback(l: Layer): boolean {
-  return !!l.asset && !!l.textData && missingFonts(l.textData).length > 0;
+  return !!l.asset && !!l.textData;
 }
 
 export type TextRaster = { image: RGBA8; rect: Rect };

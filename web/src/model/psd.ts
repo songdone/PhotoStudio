@@ -97,34 +97,49 @@ export { validatePsdHeader } from "./psd-header";
 import { exportGridMask, exportPsdAdjustment, importPsdAdjustment, supportedPsdAdjustment } from "./psd-adjustments";
 import { exportPsdArtboard, importPsdArtboard } from "./psd-artboard";
 import { blendingFromPsd, blendingToPsd, cleanBlending, type AdvancedBlending } from "./blending";
+import { importPsdLayerStyle } from "./psd-layer-style";
+import { syncPixelTransform } from "./pixel-layer";
 
 const memoryLimit = 512 * 1024 * 1024;
+// Image assets are uploaded as one texture; many devices allow at most 8192
+// pixels per side. Larger layers are kept as tiled pixel layers, which upload
+// only the tiles over the canvas.
+const GPU_SAFE_SIDE = 8192;
 
 function vectorColor(l: PsdLayer): [number, number, number] | undefined {
   if (l.children || (l.vectorStroke && !importVectorStroke(l))) return;
   return solidRgb(l.vectorFill);
 }
-function requiresComposite(
+/** Why a layer (or something inside a group) needs the saved composite, or
+ * undefined when the editor can rebuild it. The reason names the layer. */
+export function compositeReason(
   l: PsdLayer,
   supportedVector: (l: PsdLayer) => boolean,
   depth = 8,
-): boolean {
+): string | undefined {
   // Blend If ranges, channel restrictions and knockout are imported as
   // advanced blending options (see importBlending).
-  return !!(
-    (l.blendMode && !blends.includes(l.blendMode as Layer["blend"]) && !(l.blendMode === "pass through" && l.children)) ||
-    (l.adjustment && !supportedPsdAdjustment(l, depth)) ||
-    l.effects ||
-    (l.vectorMask && !supportedVector(l)) ||
-    (l.vectorFill && !supportedVector(l)) ||
-    (l.vectorStroke && !supportedVector(l)) ||
-    !supportedPsdPixelMask(l) ||
-    (l.artboard && (!l.children || !importPsdArtboard(l.artboard))) ||
-    (l.fillOpacity !== undefined && l.fillOpacity !== 1) ||
-    l.children?.some((child) => requiresComposite(child, supportedVector, depth))
-  );
+  const name = l.name ?? "Layer";
+  if (l.blendMode && !blends.includes(l.blendMode as Layer["blend"]) && !(l.blendMode === "pass through" && l.children))
+    return `${name}: blend mode ${l.blendMode}`;
+  if (l.adjustment && !supportedPsdAdjustment(l, depth)) return `${name}: ${l.adjustment.type} adjustment`;
+  if (importPsdLayerStyle(l.effects) === undefined) return `${name}: layer style`;
+  // A shape the editor cannot rebuild opens as a raster layer from the pixels
+  // the file saved for it; only a shape without saved pixels needs the composite.
+  const savedPixels = !l.children && (l.right ?? 0) > (l.left ?? 0) && (l.bottom ?? 0) > (l.top ?? 0);
+  if (!savedPixels) {
+    if (l.vectorMask && !supportedVector(l)) return `${name}: vector mask`;
+    if (l.vectorFill && !supportedVector(l)) return `${name}: ${l.vectorFill.type} shape fill`;
+    if (l.vectorStroke && !supportedVector(l)) return `${name}: shape stroke`;
+  }
+  if (!supportedPsdPixelMask(l)) return `${name}: layer mask`;
+  if (l.artboard && (!l.children || !importPsdArtboard(l.artboard))) return `${name}: artboard`;
+  for (const child of l.children ?? []) {
+    const reason = compositeReason(child, supportedVector, depth);
+    if (reason) return reason;
+  }
+  return undefined;
 }
-
 function importBlending(item: PsdLayer): AdvancedBlending | undefined {
   const b: AdvancedBlending = {};
   const ranges = blendingFromPsd(item.blendingRanges);
@@ -259,8 +274,6 @@ export async function openPsd(blob: Blob, name: string, engine?: ImageEngine) {
     if (depth > 12) throw new Error("Too many nested PSD groups.");
     for (const item of items) {
       if (++count > MAX_LAYERS) throw new Error(`PSD exceeds ${MAX_LAYERS} layers.`);
-      if (item.imageData)
-        assertSize(item.imageData.width, item.imageData.height);
       if (item.children) check(item.children, depth + 1);
     }
   };
@@ -408,7 +421,17 @@ export async function openPsd(blob: Blob, name: string, engine?: ImageEngine) {
       } else {
         l.transform.x = item.left ?? 0;
         l.transform.y = item.top ?? 0;
-        if (pixels) l.asset = await add(pixels);
+        if (pixels && !(pixels.data instanceof Uint16Array || pixels.data instanceof Float32Array) && (pixels.width > GPU_SAFE_SIDE || pixels.height > GPU_SAFE_SIDE || !withinDocumentLimits(pixels.width, pixels.height))) {
+          // Larger than an image asset may be (a long strip reaching past the
+          // canvas, say): keep every pixel in a tiled pixel layer, which draws
+          // the part over the canvas and keeps the rest.
+          l.kind = "pixel";
+          l.pixels = gridFromImage(assets.tiles, { width: pixels.width, height: pixels.height, data: pixels.data as Uint8ClampedArray }, item.left ?? 0, item.top ?? 0);
+          syncPixelTransform(l, document);
+          l.sourceWidth = pixels.width;
+          l.sourceHeight = pixels.height;
+          preserveOriginal = true;
+        } else if (pixels) l.asset = await add(pixels);
         else if (
           (item.right ?? 0) > (item.left ?? 0) &&
           (item.bottom ?? 0) > (item.top ?? 0)
@@ -434,10 +457,25 @@ export async function openPsd(blob: Blob, name: string, engine?: ImageEngine) {
             "Text, shapes and embedded objects were opened as raster layers.";
         }
       }
+      const imported = importPsdLayerStyle(item.effects, psd.imageResources?.globalAngle);
+      if (imported?.style) {
+        l.style = imported.style as unknown as Record<string, unknown>;
+        // The editor redraws the effects; keep the original so an unchanged
+        // document still downloads exactly as the file was saved.
+        preserveOriginal = true;
+      }
+      if (item.fillOpacity !== undefined && item.fillOpacity !== 1) {
+        l.fillOpacity = Math.min(1, Math.max(0, item.fillOpacity));
+        preserveOriginal = true;
+      }
       await importPsdPixelMask(item,l,assets,reserve);
       return l;
     };
-    if (!psd.children?.length || psd.children.some(item => requiresComposite(item, supportedVector, channelDepth))) {
+    const reasons = (psd.children ?? []).flatMap((item) => {
+      const r = compositeReason(item, supportedVector, channelDepth);
+      return r ? [r] : [];
+    });
+    if (!psd.children?.length || reasons.length) {
       if (channelDepth > 8) {
         reserve(document.width, document.height);
         psd.imageData = getCompositeImageData(psd);
@@ -456,7 +494,7 @@ export async function openPsd(blob: Blob, name: string, engine?: ImageEngine) {
       document.layers.push(l);
       preserveOriginal = !!psd.children?.length;
       notice = psd.children?.length
-        ? "This PSD uses unsupported masks, effects or compositing. Its saved composite was opened as one raster layer."
+        ? `This PSD uses features the editor cannot rebuild (${reasons.slice(0, 3).join("; ")}${reasons.length > 3 ? `; ${reasons.length - 3} more` : ""}). Its saved composite was opened as one raster layer.`
         : "Opened the PSD composite as one raster layer.";
     } else {
       for (const item of psd.children)
@@ -1084,7 +1122,10 @@ function editableText(l: Layer, text: ImportedText, source: NonNullable<PsdLayer
     l.textFrame = local;
     l.transform = { x: mx - width / 2, y: my - height / 2, width, height, rotation: text.rotation };
   }
-  if (!missing.length || rotated) {
+  // Keep the source application's rendering of the text until it is edited, even when
+  // the font is installed: line breaks, kerning and baseline placement differ
+  // between text engines, and an unedited document should look as saved.
+  if (rotated) {
     delete l.asset;
     delete l.assetColorSpace;
   }

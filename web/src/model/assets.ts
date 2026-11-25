@@ -108,9 +108,9 @@ export class Assets {
       premultiplyAlpha: 'none',
       colorSpaceConversion: 'default',
     });
-    if (bitmap.width > 8192 || bitmap.height > 8192 || bitmap.width * bitmap.height > 24_000_000) {
+    if (bitmap.width > 16384 || bitmap.height > 16384 || bitmap.width * bitmap.height > 24_000_000) {
       bitmap.close();
-      throw new Error('This image exceeds the 24 megapixel or 8192 pixel limit.');
+      throw new Error('This image exceeds the 24 megapixel or 16384 pixel limit.');
     }
     this.blobs.set(id, blob);
     this.bitmaps.set(id, bitmap);

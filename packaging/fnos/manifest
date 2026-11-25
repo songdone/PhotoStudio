@@ -16,4 +16,4 @@ desktop_applaunchname=photostudio.Application
 ctl_stop=true
 micro_app=true
 disable_authorization_path=false
-changelog=新增 NAS 文件选择、另存为与导出入口，支持中英文即时切换；保存前检查权限并校验文件版本，权限不符合要求时拒绝覆盖。
+changelog=应用内显示版本号；PSD 导入改进：常用图层样式（投影、颜色叠加、渐变叠加、描边）和填充不透明度可继续编辑，文字在修改前保持原文件的样子，超大图层不再导致无法打开，无法重建的形状转为像素图层；安装时提示 PSD 兼容性限制；修复强制停止或重启后无法再次启动。

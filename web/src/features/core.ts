@@ -1,3 +1,4 @@
+import { version as appVersion } from '../../package.json';
 import type { Editor } from '../editor';
 import { isRelightLayer } from './relight/state';
 import { registerCommand, commands, type Command } from '../app/registry';
@@ -372,8 +373,8 @@ export function installCore(e: Editor) {
   for (const s of ['dark', 'medium', 'light', 'system'])
     cmd(`window.theme-${s}`, `${s[0].toUpperCase() + s.slice(1)} Theme`, () => e.setTheme(s), { menu: 'window.theme', checked: () => document.documentElement.dataset.theme === s, recordable: false });
   cmd('help.shortcuts', 'Keyboard Shortcuts', () => shortcutsDialog(e), { shortcut: 'Mod+Shift+/', recordable: false });
-  cmd('help.about', 'About Photo Studio', () => information('Photo Studio', `${appIcon(64, 'about-logo')}<p>An open-source image editor that runs in your browser, built on WebGPU with a WebGL2 fallback. Documents stay on your device unless you save them to Puter.</p><p>Photo Studio is an independent open-source project.</p>`), { recordable: false });
-  cmd('help.legal', 'Open-Source Licenses', () => information('Licenses', `<p>Photo Studio uses the AGPL-3.0-only license. Third-party components include ag-psd (MIT), Lucide (ISC), pako (MIT/Zlib), PathKit (BSD-3-Clause), @noble/hashes (MIT), and Rust png (MIT/Apache-2.0). Bundled fonts are licensed under SIL Open Font License 1.1.</p><p><a href="${import.meta.env.BASE_URL}source/photo-studio-1.0.0-source.zip" download>Download the source of this version</a> · <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">View third-party notices</a> · <a href="https://github.com/HeyPuter/everything/tree/175354f3ec5054ed05b7572cf46a51dac2693d40/src/photo-studio" target="_blank" rel="noopener">Upstream project</a></p>`), { recordable: false });
+  cmd('help.about', 'About Photo Studio', () => information(`Photo Studio ${appVersion}`, `${appIcon(64, 'about-logo')}<p>An open-source image editor that runs in your browser, built on WebGPU with a WebGL2 fallback. Documents stay on your device unless you save them to Puter.</p><p>Photo Studio is an independent open-source project.</p>`), { recordable: false });
+  cmd('help.legal', 'Open-Source Licenses', () => information('Licenses', `<p>Photo Studio uses the AGPL-3.0-only license. Third-party components include ag-psd (MIT), Lucide (ISC), pako (MIT/Zlib), PathKit (BSD-3-Clause), @noble/hashes (MIT), and Rust png (MIT/Apache-2.0). Bundled fonts are licensed under SIL Open Font License 1.1.</p><p><a href="${import.meta.env.BASE_URL}source/photo-studio-${appVersion}-source.zip" download>Download the source of this version</a> · <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">View third-party notices</a> · <a href="https://github.com/HeyPuter/everything/tree/175354f3ec5054ed05b7572cf46a51dac2693d40/src/photo-studio" target="_blank" rel="noopener">Upstream project</a></p>`), { recordable: false });
 
   // ----- Colors -----
   cmd('color.default', 'Default Colors', () => {
@@ -534,7 +535,7 @@ function revealAll(e: Editor) {
     x1 = Math.max(x1, Math.ceil(t.x + t.width));
     y1 = Math.max(y1, Math.ceil(t.y + t.height));
   }
-  resizeCanvas(e, Math.min(8192, x1 - x0), Math.min(8192, y1 - y0), -x0, -y0, 'Reveal All');
+  resizeCanvas(e, Math.min(16384, x1 - x0), Math.min(16384, y1 - y0), -x0, -y0, 'Reveal All');
 }
 function arrange(e: Editor, where: 'front' | 'forward' | 'backward' | 'back') {
   const roots = e.selectedLayers;

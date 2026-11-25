@@ -298,9 +298,9 @@ function transformed(
   if (px === undefined) return `Enter a value such as 120, 2 in or 50%.`;
   if (k === 'x' || k === 'y') t[k] = Math.round(px * 100) / 100;
   else {
-    const s = linkedSize(t.width, t.height, k, clamp(px, 1, 8192), linked(e));
-    t.width = clamp(Math.round(s.width * 100) / 100, 1, 8192);
-    t.height = clamp(Math.round(s.height * 100) / 100, 1, 8192);
+    const s = linkedSize(t.width, t.height, k, clamp(px, 1, 16384), linked(e));
+    t.width = clamp(Math.round(s.width * 100) / 100, 1, 16384);
+    t.height = clamp(Math.round(s.height * 100) / 100, 1, 16384);
   }
   return { t };
 }

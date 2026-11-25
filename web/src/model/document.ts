@@ -328,12 +328,12 @@ export function assertSize(w: number, h: number) {
     !Number.isInteger(h) ||
     w < 1 ||
     h < 1 ||
-    w > 8192 ||
-    h > 8192 ||
+    w > 16384 ||
+    h > 16384 ||
     w * h > 24_000_000
   )
     throw new Error(
-      "Use dimensions from 1 to 8192 pixels, up to 24 megapixels.",
+      "Use dimensions from 1 to 16384 pixels, up to 24 megapixels.",
     );
 }
 export function findLayer(layers: Layer[], id: string): Layer | undefined {

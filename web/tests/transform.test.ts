@@ -43,8 +43,8 @@ describe('transform geometry', () => {
         const t = resizeTransform(base, 'se', delta, proportional);
         expect(t.width).toBeGreaterThanOrEqual(1);
         expect(t.height).toBeGreaterThanOrEqual(1);
-        expect(t.width).toBeLessThanOrEqual(8192);
-        expect(t.height).toBeLessThanOrEqual(8192);
+        expect(t.width).toBeLessThanOrEqual(16384);
+        expect(t.height).toBeLessThanOrEqual(16384);
         if (proportional) expect(t.width / t.height).toBeCloseTo(2);
       }
   });

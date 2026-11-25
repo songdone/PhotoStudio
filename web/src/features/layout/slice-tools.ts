@@ -239,7 +239,7 @@ export function installSliceTools(_e: Editor) {
       const sized = s.style !== 'normal';
       return `<label>Style <select id="slice-style"><option value="normal" ${s.style === 'normal' ? 'selected' : ''}>Normal</option><option value="ratio" ${s.style === 'ratio' ? 'selected' : ''}>Fixed Ratio</option><option value="size" ${s.style === 'size' ? 'selected' : ''}>Fixed Size</option></select></label>${
         sized
-          ? `<label>W <input id="slice-w" type="number" min="1" max="8192" step="1" value="${s.width}"></label><label>H <input id="slice-h" type="number" min="1" max="8192" step="1" value="${s.height}"></label>`
+          ? `<label>W <input id="slice-w" type="number" min="1" max="16384" step="1" value="${s.width}"></label><label>H <input id="slice-h" type="number" min="1" max="16384" step="1" value="${s.height}"></label>`
           : ''
       }<span class="divider"></span><button data-command="slices.from-guides" ${e.doc.guides?.length ? '' : 'disabled'} title="Create a slice for each cell between the guides">Slices From Guides</button><button class="toggle" id="slice-hide-auto" aria-pressed="${sliceState.hideAuto}" title="Hide or show automatic slices">${svg(sliceState.hideAuto ? 'eye-off' : 'eye', 14)} Auto Slices</button><span class="hint">${s.style === 'size' ? 'Click to place a slice' : s.style === 'ratio' ? 'Drag to draw a slice with this ratio' : 'Drag to draw a slice; Shift draws a square'}</span>`;
     },
@@ -251,7 +251,7 @@ export function installSliceTools(_e: Editor) {
       const num = (id: string, key: 'width' | 'height') =>
         el.querySelector<HTMLInputElement>(id)?.addEventListener('change', (ev) => {
           const v = Math.round(Number((ev.target as HTMLInputElement).value));
-          if (v >= 1) toolSettings[key] = Math.min(8192, v);
+          if (v >= 1) toolSettings[key] = Math.min(16384, v);
         });
       num('#slice-w', 'width');
       num('#slice-h', 'height');

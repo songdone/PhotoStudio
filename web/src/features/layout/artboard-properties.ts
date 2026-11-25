@@ -10,7 +10,7 @@ import { propertiesEditors } from '../panels/properties';
 import { backgroundOptions, fitRectOnScreen, resizeArtboard, setArtboard, shiftArtboard, layoutCommand } from './artboards';
 
 const num = (key: string, label: string, value: number, min?: number) =>
-  `<label class="number-field"><span>${label}</span><input type="number" data-artboard="${key}" step="1" ${min !== undefined ? `min="${min}" max="8192"` : ''} value="${Math.round(value)}" aria-label="Artboard ${label}"></label>`;
+  `<label class="number-field"><span>${label}</span><input type="number" data-artboard="${key}" step="1" ${min !== undefined ? `min="${min}" max="16384"` : ''} value="${Math.round(value)}" aria-label="Artboard ${label}"></label>`;
 
 export function installArtboardProperties(_e: Editor) {
   propertiesEditors.set('artboard', {
@@ -55,7 +55,7 @@ ${a.background === 'custom' ? `<label class="color-row">Color <input type="color
             resizeArtboard(e, id, { ...rect, width: flip ? p.height : p.width, height: flip ? p.width : p.height }, p.id);
           }
         } else if (key === 'width' || key === 'height') {
-          const v = Math.max(1, Math.min(8192, Math.round(Number(t.value) || 1)));
+          const v = Math.max(1, Math.min(16384, Math.round(Number(t.value) || 1)));
           resizeArtboard(e, id, { ...rect, [key]: v });
         } else if (key === 'x' || key === 'y') {
           const v = Math.round(Number(t.value) || 0);

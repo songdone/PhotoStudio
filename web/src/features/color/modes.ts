@@ -250,8 +250,8 @@ async function bitmapDialog(e: Editor) {
   lastBitmap = { resolution: outRes, method: v.method, frequency: Number(v.frequency) || 53, angle: Number(v.angle) || 0, shape: v.shape };
   const w2 = Math.max(1, Math.round((doc.width * outRes) / inRes)),
     h2 = Math.max(1, Math.round((doc.height * outRes) / inRes));
-  if (w2 > 8192 || h2 > 8192 || w2 * h2 > 24_000_000) {
-    e.message(`At ${outRes} pixels/inch the image would be ${w2} × ${h2} px, above the 8192 px / 24 megapixel limit. Choose a lower output resolution.`);
+  if (w2 > 16384 || h2 > 16384 || w2 * h2 > 24_000_000) {
+    e.message(`At ${outRes} pixels/inch the image would be ${w2} × ${h2} px, above the 16384 px / 24 megapixel limit. Choose a lower output resolution.`);
     return;
   }
   const opts: BitmapOptions = {

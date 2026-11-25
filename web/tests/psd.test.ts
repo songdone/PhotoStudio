@@ -42,7 +42,7 @@ describe('PSD preflight', () => {
       expect(() => validatePsdHeader(bytes)).toThrow(message);
     }
     const bytes = header();
-    new DataView(bytes.buffer).setUint32(14, 9000);
+    new DataView(bytes.buffer).setUint32(14, 17000);
     expect(() => validatePsdHeader(bytes)).toThrow('dimensions');
   });
 });

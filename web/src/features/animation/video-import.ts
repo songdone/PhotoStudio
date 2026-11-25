@@ -84,7 +84,7 @@ export async function importVideoFrames(e: Editor, arg?: unknown) {
     const vw = video.videoWidth,
       vh = video.videoHeight;
     if (!vw || !vh) throw new Error('The video has no picture.');
-    const fit = Math.min(1, 8192 / vw, 8192 / vh, Math.sqrt(24_000_000 / (vw * vh)));
+    const fit = Math.min(1, 16384 / vw, 16384 / vh, Math.sqrt(24_000_000 / (vw * vh)));
     const result = await modal({
       title: 'Video Frames to Layers',
       submit: 'Import',

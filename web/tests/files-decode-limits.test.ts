@@ -26,7 +26,7 @@ describe('opening files beyond the document limits', () => {
     // Decoding this page would need about 5 GB (samples, RGBA8 and RGBA16).
     const tiff = buildTiff([tiffPage(16000, 16000)], { le: true });
     expect(tiff.length).toBeLessThan(1000);
-    await expect(decodeFile(new Blob([tiff.slice()]), 'huge.tif')).rejects.toThrow('This image is 16000 × 16000 pixels, beyond the 8192 pixel per side or 24 megapixel limit.');
+    await expect(decodeFile(new Blob([tiff.slice()]), 'huge.tif')).rejects.toThrow('This image is 16000 × 16000 pixels, beyond the 16384 pixel per side or 24 megapixel limit.');
   });
 
   it('checks the header of every codec format against the limits', () => {
@@ -98,7 +98,7 @@ describe('browser-decoded images beyond the document limits', () => {
 
   it('refuses oversized PNG and WebP files before the browser decodes them', async () => {
     // Node has no createImageBitmap: reaching it would fail with another error.
-    await expect(decodeFile(new Blob([png(16000, 16000)]), 'huge.png')).rejects.toThrow('This image is 16000 × 16000 pixels, beyond the 8192 pixel per side or 24 megapixel limit.');
+    await expect(decodeFile(new Blob([png(16000, 16000)]), 'huge.png')).rejects.toThrow('This image is 16000 × 16000 pixels, beyond the 16384 pixel per side or 24 megapixel limit.');
     await expect(decodeFile(new Blob([jpeg(6000, 6000)]), 'huge.jpg')).rejects.toThrow('This image is 6000 × 6000 pixels');
     await expect(decodeFile(new Blob([riff('VP8X', [0, 0, 0, 0, 0xff, 0x3f, 0, 0xff, 0x3f, 0])]), 'huge.webp')).rejects.toThrow('This image is 16384 × 16384 pixels');
   });

@@ -166,7 +166,6 @@ export function importVectorStroke(layer: PsdLayer): VectorStroke | undefined {
   const s = layer.vectorStroke;
   if (
     !s ||
-    layer.usingAlignedRendering ||
     s.lineDashSet?.some(
       (v, i, list) => v.value === 0 && (i % 2 === 0 || list.length % 2 === 1),
     ) ||

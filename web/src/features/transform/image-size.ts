@@ -257,8 +257,8 @@ export async function imageSizeDialog(e: Editor, arg?: unknown) {
       $('[data-is="size"]').textContent = formatBytes(now);
       $('[data-is="was"]').textContent = now !== was ? `(was ${formatBytes(was)})` : '';
       $('[data-is="dims"]').textContent = `${pw} px × ${ph} px`;
-      const tooBig = pw > 8192 || ph > 8192 || pw * ph > 24_000_000;
-      $('[data-is="note"]').textContent = invalid.size ? (invalid.has(res) && invalid.size === 1 ? 'Enter a resolution greater than 0.' : 'Enter a width and height greater than 0.') : tooBig ? 'Use dimensions up to 8192 pixels and 24 megapixels.' : st.resample ? `Resample with ${RESAMPLE_METHODS.find(([v]) => v === st.method)![1].replace(/ \(.*\)/, '')}${st.method === 'automatic' ? ` (${labelFor(resolveMethod('automatic', ow, oh, pw, ph))})` : ''}.` : 'Pixel dimensions stay the same; only the print size and resolution change.';
+      const tooBig = pw > 16384 || ph > 16384 || pw * ph > 24_000_000;
+      $('[data-is="note"]').textContent = invalid.size ? (invalid.has(res) && invalid.size === 1 ? 'Enter a resolution greater than 0.' : 'Enter a width and height greater than 0.') : tooBig ? 'Use dimensions up to 16384 pixels and 24 megapixels.' : st.resample ? `Resample with ${RESAMPLE_METHODS.find(([v]) => v === st.method)![1].replace(/ \(.*\)/, '')}${st.method === 'automatic' ? ` (${labelFor(resolveMethod('automatic', ow, oh, pw, ph))})` : ''}.` : 'Pixel dimensions stay the same; only the print size and resolution change.';
       (form.querySelector('[type=submit]') as HTMLButtonElement).disabled = tooBig || invalid.size > 0;
       clearTimeout(previewTimer);
       previewTimer = window.setTimeout(() => void drawPreview(canvas, composite, ow, oh, st), 120);

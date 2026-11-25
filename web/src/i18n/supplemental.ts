@@ -82,7 +82,7 @@ Select layers to transform.	请选择要变换的图层。
 Select layers to rotate.	请选择要旋转的图层。
 Select layers with content to transform.	请选择包含内容的图层进行变换。
 The selected area is empty. Select some of the layer’s pixels to transform them.	所选区域为空。请选择图层中的像素进行变换。
-The rotated canvas would exceed 8192 pixels or 24 megapixels.	旋转后的画布将超过单边 8192 像素或 2400 万像素限制。
+The rotated canvas would exceed 16384 pixels or 24 megapixels.	旋转后的画布将超过单边 16384 像素或 2400 万像素限制。
 Transform a layer first; Transform Again repeats it.	请先变换图层，“再次变换”会重复该操作。
 Rasterize type and shape layers to repeat a skew, distortion or warp.	请先栅格化文字和形状图层，再重复斜切、扭曲或变形。
 Nothing to transform.	没有可变换的内容。
@@ -124,10 +124,10 @@ Quick actions bar hidden. Show it again from Window › Quick Actions Bar.	快�
 No warnings were turned off.	没有已关闭的警告。
 Preferences imported.	已导入首选项。
 Preferences changed. This browser could not store them (its storage is full or turned off), so they last until the page is closed.	首选项已更改，但浏览器存储已满或被关闭，设置仅在本次页面会话有效。
-Crop size must be 8192 pixels or less per side and 24 megapixels or less.	裁剪尺寸每边不能超过 8192 像素，总像素不能超过 2400 万。
+Crop size must be 16384 pixels or less per side and 24 megapixels or less.	裁剪尺寸每边不能超过 16384 像素，总像素不能超过 2400 万。
 Place four corners on the canvas first.	请先在画布上设置四个角点。
 The corners must form a convex four-sided shape; drag them to the corners of the plane.	角点必须构成凸四边形，请将它们拖到平面的四个角。
-The corrected image would exceed 8192 pixels or 24 megapixels; enter a smaller size.	校正后的图像将超过单边 8192 像素或 2400 万像素限制，请输入较小尺寸。
+The corrected image would exceed 16384 pixels or 24 megapixels; enter a smaller size.	校正后的图像将超过单边 16384 像素或 2400 万像素限制，请输入较小尺寸。
 The corners must form a four-sided shape.	角点必须构成四边形。
 Photo	照片
 Print	打印

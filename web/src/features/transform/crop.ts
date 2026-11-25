@@ -167,16 +167,16 @@ async function commitCrop(e: Editor) {
   const s = settings(e);
   const w = Math.max(1, Math.round(b.w)),
     h = Math.max(1, Math.round(b.h));
-  if (w > 8192 || h > 8192 || w * h > 24_000_000) {
-    e.message('Crop size must be 8192 pixels or less per side and 24 megapixels or less.');
+  if (w > 16384 || h > 16384 || w * h > 24_000_000) {
+    e.message('Crop size must be 16384 pixels or less per side and 24 megapixels or less.');
     return;
   }
   // W x H x Resolution resamples after cropping: check that size up front so
   // the crop is not left half done.
   const ppi = s.resUnit === 'PPCM' ? s.res * 2.54 : s.res;
   const target = s.preset === 'whr' && s.tw > 0 && s.th > 0 ? { width: Math.max(1, Math.round(toPixels(s.tw, s.tunit, ppi, w))), height: Math.max(1, Math.round(toPixels(s.th, s.tunit, ppi, h))) } : undefined;
-  if (target && (target.width > 8192 || target.height > 8192 || target.width * target.height > 24_000_000)) {
-    e.message('The crop’s width and height must come to 8192 pixels or less per side and 24 megapixels or less at this resolution.');
+  if (target && (target.width > 16384 || target.height > 16384 || target.width * target.height > 24_000_000)) {
+    e.message('The crop’s width and height must come to 16384 pixels or less per side and 24 megapixels or less at this resolution.');
     return;
   }
   // Committing the untouched box changes nothing: no empty Crop step.
@@ -282,8 +282,8 @@ async function commitPerspective(e: Editor) {
   const auto = rectifiedSize(q);
   const w = s.w && s.w > 0 ? Math.round(s.w) : auto.width,
     h = s.h && s.h > 0 ? Math.round(s.h) : auto.height;
-  if (w > 8192 || h > 8192 || w * h > 24_000_000) {
-    e.message('The corrected image would exceed 8192 pixels or 24 megapixels; enter a smaller size.');
+  if (w > 16384 || h > 16384 || w * h > 24_000_000) {
+    e.message('The corrected image would exceed 16384 pixels or 24 megapixels; enter a smaller size.');
     return;
   }
   let m;

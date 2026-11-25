@@ -165,9 +165,9 @@ export async function canvasSizeDialog(e: Editor, arg?: unknown) {
       const nw = Math.round(st.w),
         nh = Math.round(st.h);
       $('[data-cs="size"]').textContent = formatBytes(imageBytes(Math.max(1, nw), Math.max(1, nh), bits));
-      const bad = nw < 1 || nh < 1 || nw > 8192 || nh > 8192 || nw * nh > 24_000_000;
+      const bad = nw < 1 || nh < 1 || nw > 16384 || nh > 16384 || nw * nh > 24_000_000;
       $('[data-cs="note"]').textContent = bad
-        ? 'Use dimensions from 1 to 8192 pixels, up to 24 megapixels.'
+        ? 'Use dimensions from 1 to 16384 pixels, up to 24 megapixels.'
         : nw < ow || nh < oh
           ? 'The new canvas is smaller: content outside it stays on its layers until you trim or flatten.'
           : hasBackground

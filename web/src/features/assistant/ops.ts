@@ -201,8 +201,8 @@ export const OPS: OpSpec[] = [
     label: 'Resize Image',
     description: 'Resample the whole image to a width and/or height in pixels (the other keeps the proportions) or a percentage.',
     params: [
-      { key: 'width', type: 'integer', label: 'Width', min: 1, max: 8192, unit: 'px' },
-      { key: 'height', type: 'integer', label: 'Height', min: 1, max: 8192, unit: 'px' },
+      { key: 'width', type: 'integer', label: 'Width', min: 1, max: 16384, unit: 'px' },
+      { key: 'height', type: 'integer', label: 'Height', min: 1, max: 16384, unit: 'px' },
       { key: 'percent', type: 'number', label: 'Scale', min: 1, max: 800, unit: '%' },
       { key: 'method', type: 'enum', label: 'Resampling', options: [{ value: 'bicubic', label: 'Bicubic' }, { value: 'bicubic-sharper', label: 'Bicubic sharper' }, { value: 'bicubic-smoother', label: 'Bicubic smoother' }, { value: 'lanczos', label: 'Lanczos' }, { value: 'preserve-details', label: 'Preserve details' }, { value: 'bilinear', label: 'Bilinear' }, { value: 'nearest', label: 'Nearest neighbor' }], default: 'bicubic' },
     ],
@@ -217,7 +217,7 @@ export const OPS: OpSpec[] = [
       else if (h === undefined) h = Math.round((H * w) / W);
       w = Math.max(1, w!);
       h = Math.max(1, h!);
-      if (w > 8192 || h > 8192 || w * h > 24_000_000) throw new Error(`${w} × ${h} px exceeds the document limits (8192 pixels per side, 24 megapixels).`);
+      if (w > 16384 || h > 16384 || w * h > 24_000_000) throw new Error(`${w} × ${h} px exceeds the document limits (16384 pixels per side, 24 megapixels).`);
       const { resampleDocument } = await import('../transform/image-size');
       resampleDocument(e, w, h, (a.method as never) ?? 'bicubic');
       e.fit();

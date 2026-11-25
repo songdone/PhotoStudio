@@ -62,12 +62,12 @@ export async function upscaleDialog(e: Editor, arg?: unknown) {
   e.modal?.apply();
   const doc = e.doc, W = doc.width, H = doc.height;
   const limit = maxPercent(W, H);
-  if (limit <= 100) return e.message('The image is already at the size limit (8192 pixels per side, 24 megapixels).');
+  if (limit <= 100) return e.message('The image is already at the size limit (16384 pixels per side, 24 megapixels).');
   const given = givenParams(arg);
   if (given) {
     // Recorded actions replay the offline upscale only (never the AI pass).
     const percent = Math.round(num(given.percent, 101, 800, 200));
-    if (!upscaleSize(W, H, percent).fits) return e.message(`Upscaling to ${percent}% would exceed 8192 pixels per side or 24 megapixels.`);
+    if (!upscaleSize(W, H, percent).fits) return e.message(`Upscaling to ${percent}% would exceed 16384 pixels per side or 24 megapixels.`);
     return runUpscale(e, { percent, detail: num(given.detail, 0, 100, 50), ai: false });
   }
   // Generation History's Reuse Settings opens the dialog with `{ prefill }`.
@@ -103,7 +103,7 @@ export async function upscaleDialog(e: Editor, arg?: unknown) {
     const sz = upscaleSize(W, H, s.percent);
     readout.innerHTML = `New size: <strong>${sz.width} × ${sz.height} px</strong> <span class="assist-note">(was ${W} × ${H})</span>`;
     note.className = sz.fits ? 'assist-note' : 'assist-note warn';
-    note.textContent = sz.fits ? 'Every pixel layer, mask, channel and the selection are enlarged; type, shapes and embedded objects scale without loss.' : `Too large: documents are limited to 8192 pixels per side and 24 megapixels (at most ${limit}% here).`;
+    note.textContent = sz.fits ? 'Every pixel layer, mask, channel and the selection are enlarged; type, shapes and embedded objects scale without loss.' : `Too large: documents are limited to 16384 pixels per side and 24 megapixels (at most ${limit}% here).`;
     ok.disabled = !sz.fits;
     custom.value = String(s.percent);
     presets.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.p) === s.percent)));

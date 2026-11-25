@@ -1,0 +1,30 @@
+[
+  {
+    "stepTitle": "PSD 兼容性说明",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "PSD/PSB 由其他图像软件制作，Photo Studio 只能部分还原。打开时，部分功能无法原样编辑：不支持的图层样式、智能对象、部分形状与蒙版会转为像素图层；无法重建的文件会以一张合成图打开。文字图层在修改前显示原文件保存的样子，修改后用当前设备的字体重新排版，位置和字形可能变化。"
+      },
+      {
+        "type": "tips",
+        "helpText": "打开的 PSD 未经修改时，“下载 PSD”得到的仍是原文件。编辑后再保存为 PSD，未能保留的效果会转为像素，可能和原文件不同。"
+      },
+      {
+        "type": "tips",
+        "helpText": "处理重要的 PSD 前请先备份原文件，并建议用“另存为”保存成新文件，不要直接覆盖原文件。需要保留全部编辑能力时，请保存为 .photo 项目。"
+      },
+      {
+        "type": "checkbox",
+        "field": "wizard_psd_notice",
+        "label": "确认",
+        "options": [
+          { "label": "我已了解 PSD 兼容性限制，会在编辑重要文件前先备份", "value": "accepted" }
+        ],
+        "rules": [
+          { "required": true, "message": "请勾选确认后继续安装" }
+        ]
+      }
+    ]
+  }
+]

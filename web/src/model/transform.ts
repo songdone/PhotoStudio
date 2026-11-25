@@ -147,13 +147,13 @@ export function resizeTransform(
     let factor = !sx ? hy : !sy ? wx : Math.abs(wx - 1) >= Math.abs(hy - 1) ? wx : hy;
     factor = Math.max(
       Math.max(1 / t.width, 1 / t.height),
-      Math.min(Math.min(8192 / t.width, 8192 / t.height), factor),
+      Math.min(Math.min(16384 / t.width, 16384 / t.height), factor),
     );
     width = t.width * factor;
     height = t.height * factor;
   } else {
-    width = Math.max(1, Math.min(8192, width));
-    height = Math.max(1, Math.min(8192, height));
+    width = Math.max(1, Math.min(16384, width));
+    height = Math.max(1, Math.min(16384, height));
   }
   // Pin the opposite corner (or opposite edge midpoint) even on rotated layers.
   const ax = (1 - sx) / 2,

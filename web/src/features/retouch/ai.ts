@@ -146,7 +146,7 @@ ${methodField(pre.method)}`,
       const nw = W + by.left + by.right,
         nh = H + by.top + by.bottom;
       if (nw === W && nh === H) throw new AIError('bad-request', 'Enter how many pixels to add on at least one side.');
-      if (nw > 8192 || nh > 8192 || nw * nh > 24_000_000) throw new AIError('bad-request', 'The expanded image would exceed 8192 pixels or 24 megapixels.');
+      if (nw > 16384 || nh > 16384 || nw * nh > 24_000_000) throw new AIError('bad-request', 'The expanded image would exceed 16384 pixels or 24 megapixels.');
       const prompt = ws.q<HTMLTextAreaElement>('#ai-prompt').value;
       const method = ws.q<HTMLSelectElement>('#ai-method').value as 'edit' | 'inpaint';
       return { by, prompt, method, image: await aiExpand(img, by, prompt, { mode: method, signal }) };

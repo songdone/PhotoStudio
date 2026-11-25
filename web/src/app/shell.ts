@@ -1,3 +1,4 @@
+import { version as appVersion } from '../../package.json';
 import { svg } from './icons';
 import { formatShortcut } from './shortcuts';
 import { labelDialogsOnOpen } from '../ui/dialog';
@@ -98,7 +99,7 @@ Right-click, hold or press → for the list" aria-label="Change screen mode">${s
   <span class="status-zoom"><button data-command="view.zoom-out" class="icon-button" aria-label="Zoom out" title="Zoom out">${svg('minus', 14)}</button><input id="zoom-label" class="zoom-field" value="100%" aria-label="Zoom level" title="Type a zoom level and press Enter" spellcheck="false" autocomplete="off"><button data-command="view.zoom-in" class="icon-button" aria-label="Zoom in" title="Zoom in">${svg('plus', 14)}</button></span>
   <span id="tab-size">1600 × 1000</span><span class="canvas-color-mode">RGB / 8</span><span id="pointer-info" aria-live="off"></span>
   <span id="status" role="status">Ready</span>
-  <span class="status-end"><span id="engine-status">Starting graphics…</span></span>
+  <span class="status-end"><span id="app-version">v${appVersion}</span><span id="engine-status">Starting graphics…</span></span>
 </footer>
 <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/avif,image/gif,image/bmp,image/tiff,image/svg+xml,.photo,.psd,.psb,.tif,.tiff,.bmp,.ico,.tga,.ppm,.pgm,.pbm,.pnm" multiple hidden>
 <dialog id="dialog"></dialog><div id="toast" role="status" hidden></div>`;

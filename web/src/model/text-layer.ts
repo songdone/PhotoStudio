@@ -84,8 +84,8 @@ export function fitTextFrame(l: Layer, local: Rect) {
   const r = { x: local.x, y: local.y, width: Math.max(1, local.width), height: Math.max(1, local.height) };
   l.transform = placeTextRect(l, r);
   l.textFrame = r;
-  l.sourceWidth = Math.max(1, Math.min(8192, Math.round(r.width)));
-  l.sourceHeight = Math.max(1, Math.min(8192, Math.round(r.height)));
+  l.sourceWidth = Math.max(1, Math.min(16384, Math.round(r.width)));
+  l.sourceHeight = Math.max(1, Math.min(16384, Math.round(r.height)));
 }
 
 // Uniform scaling from the transform tools becomes a type size change;

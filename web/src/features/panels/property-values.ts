@@ -166,7 +166,7 @@ export function normalizeAngle(deg: number): number {
   return Object.is(a, -0) ? 0 : a;
 }
 
-export const MAX_SIDE = 8192,
+export const MAX_SIDE = 16384,
   MAX_PIXELS = 24_000_000;
 /** Why a document size cannot be used, or undefined when it can. */
 export function canvasSizeProblem(w: number, h: number): string | undefined {

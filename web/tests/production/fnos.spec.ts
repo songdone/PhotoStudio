@@ -1,7 +1,32 @@
 import { test, expect } from '@playwright/test';
+import metadata from '../../package.json' with { type: 'json' };
 import { readFile } from 'node:fs/promises';
 import { layer, newDocument } from '../../src/model/document';
 import { photoFile } from '../browser/helpers';
+
+const { version } = metadata;
+
+test('release version is visible in the status bar and About with a matching source download', async ({ page }, info) => {
+  await page.goto('./');
+  await expect(page.locator('#engine-status')).toHaveText(/WebGPU|WebGL2/);
+  await expect(page.locator('#app-version')).toHaveText(`v${version}`);
+  await expect(page.locator('#app-version')).toBeVisible();
+  await page.getByRole('menuitem', { name: '帮助', exact: true }).click();
+  await page.locator('[data-command="help.about"]').click();
+  const about = page.getByRole('dialog', { name: `Photo Studio ${version}`, exact: true });
+  await expect(about).toBeVisible();
+  await page.screenshot({ path: info.outputPath('about-version.png') });
+  await page.keyboard.press('Escape');
+  await expect(about).not.toBeVisible();
+  await page.getByRole('menuitem', { name: '帮助', exact: true }).click();
+  await page.locator('[data-command="help.legal"]').click();
+  const source = page.locator(`a[href$="/source/photo-studio-${version}-source.zip"]`);
+  await expect(source).toBeVisible();
+  const archive = await page.request.get((await source.getAttribute('href'))!);
+  expect(archive.ok()).toBe(true);
+  expect((await archive.body()).subarray(0, 4).toString('hex')).toBe('504b0304');
+});
+
 
 test('coffee dialog shows original local images and the requested copy', async ({ page }, info) => {
   const external: string[] = [];

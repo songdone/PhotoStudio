@@ -29,7 +29,7 @@ export function createBatchLink(e: Editor): Promise<void> {
     <div class="processor-row"><label class="dialog-field">Format<select name="format" title="File type of the results">${(['jpeg', 'png', 'webp', 'tiff'] as const).map((f) => `<option value="${f}">${formatInfo[f].label}</option>`).join('')}</select></label>
     <label class="dialog-field">Quality<input type="number" name="quality" min="1" max="100" value="85" title="JPEG and WebP quality"></label></div>
     <label class="dialog-field checkbox-field" title="Make results no larger than the size below (smaller photos stay as they are)">Resize to fit<input type="checkbox" name="resize"></label>
-    <div class="processor-row"><label class="dialog-field">W (px)<input type="number" name="w" min="1" max="8192" value="1920" title="Largest width of the results"></label><label class="dialog-field">H (px)<input type="number" name="h" min="1" max="8192" value="1920" title="Largest height of the results"></label></div>
+    <div class="processor-row"><label class="dialog-field">W (px)<input type="number" name="w" min="1" max="16384" value="1920" title="Largest width of the results"></label><label class="dialog-field">H (px)<input type="number" name="h" min="1" max="16384" value="1920" title="Largest height of the results"></label></div>
     <label class="dialog-field">Link<textarea name="link" rows="3" readonly aria-label="Batch link" title="The link to bookmark or share"></textarea></label>
     <div class="dialog-actions"><a class="button batch-link-open" target="_blank" rel="noopener" title="Open the link in a new tab, or drag it to the bookmarks bar">Open Link</a><button type="button" data-act="cancel">Close</button><button type="submit" class="primary" title="Copy the link to the clipboard">Copy Link</button></div>
   </form>`;
@@ -59,7 +59,7 @@ export function createBatchLink(e: Editor): Promise<void> {
             steps: used.map((s) => (s.arg === undefined ? { command: s.command } : { command: s.command, arg: s.arg })),
             format: field('format').value as BatchLink['format'],
             quality: Math.max(1, Math.min(100, Math.round(Number(field('quality').value) || 85))),
-            fit: field('resize').checked ? { width: Math.max(1, Math.min(8192, Math.round(Number(field('w').value) || 1920))), height: Math.max(1, Math.min(8192, Math.round(Number(field('h').value) || 1920))) } : undefined,
+            fit: field('resize').checked ? { width: Math.max(1, Math.min(16384, Math.round(Number(field('w').value) || 1920))), height: Math.max(1, Math.min(16384, Math.round(Number(field('h').value) || 1920))) } : undefined,
           };
           url = appUrl() + encodeBatchLink(link);
         } catch (error) {

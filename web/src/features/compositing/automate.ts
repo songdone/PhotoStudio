@@ -180,8 +180,8 @@ export async function fitImage(e: Editor, arg?: unknown) {
     const v = await formDialog(
       'Fit Image',
       [
-        { name: 'width', label: 'Width (px)', value: e.doc.width, type: 'number', min: 1, max: 8192, step: 1 },
-        { name: 'height', label: 'Height (px)', value: e.doc.height, type: 'number', min: 1, max: 8192, step: 1 },
+        { name: 'width', label: 'Width (px)', value: e.doc.width, type: 'number', min: 1, max: 16384, step: 1 },
+        { name: 'height', label: 'Height (px)', value: e.doc.height, type: 'number', min: 1, max: 16384, step: 1 },
         { name: 'enlarge', label: 'Do not enlarge', value: 'yes', type: 'checkbox' },
       ],
       'OK',

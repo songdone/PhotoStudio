@@ -50,7 +50,7 @@ export type AssetVariant = { scale: number; folder: string; suffix: string };
 export type ParsedDefaults = { variants: AssetVariant[]; errors: string[] };
 
 const KNOWN = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'];
-export const MAX_SIDE = 8192;
+export const MAX_SIDE = 16384;
 const FILE_RE = /^(.*)\.([A-Za-z]+)([0-9]*)(%?)$/;
 const NUM = '(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
 const PERCENT_RE = new RegExp(`^(${NUM})%$`);

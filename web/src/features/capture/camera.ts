@@ -47,7 +47,7 @@ const save = (s: Settings) => {
   }
 };
 const BURST_GAP_MS = 500;
-const MAX_SIDE = 8192;
+const MAX_SIDE = 16384;
 
 function constraints(s: Settings): MediaStreamConstraints {
   const video: MediaTrackConstraints = {};

@@ -235,7 +235,7 @@ function change(e: Editor, t: HTMLInputElement) {
       else {
         const value = Number(t.value);
         if (!Number.isFinite(value)) return;
-        l.transform[k as keyof Layer['transform']] = k === 'width' || k === 'height' ? Math.max(1, Math.min(8192, value)) : value;
+        l.transform[k as keyof Layer['transform']] = k === 'width' || k === 'height' ? Math.max(1, Math.min(16384, value)) : value;
       }
     },
     ['x', 'y', 'width', 'height', 'rotation'].includes(k) ? 'position' : 'all',

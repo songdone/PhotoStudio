@@ -15,19 +15,19 @@ function stretched() {
   const doc = newDocument(1000, 100, 'Wide');
   const img = { width: 100, height: 10, data: new Uint8ClampedArray(100 * 10 * 4).fill(200) };
   const l = newPixelLayer('Strip', doc, gridFromImage(assets.tiles, img));
-  // Free Transform to 90 times the width, as the editor bakes it.
-  l.transform = { ...l.transform, width: 9000 };
+  // Free Transform to 170 times the width, as the editor bakes it.
+  l.transform = { ...l.transform, width: 17000 };
   commitPixelResample(l, assets.tiles, doc, 'nearest');
   doc.layers.push(l);
   return { assets, doc, l };
 }
 
-it('reopens a project with a pixel layer wider than 8192 pixels', async () => {
+it('reopens a project with a pixel layer wider than 16384 pixels', async () => {
   const { assets, doc, l } = stretched();
-  expect([l.sourceWidth, l.sourceHeight]).toEqual([9000, 10]);
+  expect([l.sourceWidth, l.sourceHeight]).toEqual([17000, 10]);
   const loaded = await deserialize(await serialize(doc, assets));
   const back = loaded.document.layers[0];
-  expect([back.sourceWidth, back.sourceHeight]).toEqual([9000, 10]);
+  expect([back.sourceWidth, back.sourceHeight]).toEqual([17000, 10]);
   expect(gridDocBounds(back.pixels!)).toEqual(gridDocBounds(l.pixels!));
 });
 

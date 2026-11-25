@@ -117,7 +117,7 @@ export function validateEmbeds(doc: PhotoDocument) {
       throw new Error('Invalid embedded objects.');
     for (const [key, c] of Object.entries(embeds)) {
       if (!c || typeof c !== 'object' || c.id !== key || !isDocumentId(c.id) || typeof c.name !== 'string' || c.name.length > maxContentsName ||
-        !Number.isInteger(c.width) || !Number.isInteger(c.height) || c.width < 1 || c.height < 1 || c.width > 8192 || c.height > 8192 ||
+        !Number.isInteger(c.width) || !Number.isInteger(c.height) || c.width < 1 || c.height < 1 || c.width > 16384 || c.height > 16384 ||
         !isId(c.composite) || (c.project !== undefined && !isId(c.project)) || (c.source !== undefined && !isId(c.source)) ||
         (c.sourceName !== undefined && (typeof c.sourceName !== 'string' || c.sourceName.length > 512)) ||
         !['document', 'srgb'].includes(c.colorSpace) ||

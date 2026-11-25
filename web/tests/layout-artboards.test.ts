@@ -150,8 +150,8 @@ describe('artboard geometry', () => {
     expect(a.artboard.rect).toEqual({ x: -10, y: 40, width: 300, height: 600 });
     resizeDocument(doc, 200, 200);
     expect(a.artboard.rect).toEqual({ x: -5, y: 20, width: 150, height: 300 });
-    a.artboard.rect = { x: 0, y: 0, width: 9000, height: 10 };
-    expect(() => expandCanvasToArtboards(doc)).toThrow(/8192/);
+    a.artboard.rect = { x: 0, y: 0, width: 17000, height: 10 };
+    expect(() => expandCanvasToArtboards(doc)).toThrow(/16384/);
     expect(mapRect({ x: 0, y: 0, width: 10, height: 20 }, (x, y) => [-y, x])).toEqual({ x: -20, y: 0, width: 20, height: 10 });
   });
   it('places duplicated artboards beside the original and grows the canvas', () => {

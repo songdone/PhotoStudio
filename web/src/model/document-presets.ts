@@ -168,7 +168,7 @@ export function specPixels(spec: DocSpec, cols?: ColumnSize): { width: number; h
   let error: string | undefined;
   if (!(spec.width > 0) || !(spec.height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) error = 'Enter a width and height greater than zero.';
   else if (!(ppi >= 1 && ppi <= 10000)) error = 'Use a resolution from 1 to 10,000 pixels per inch.';
-  else if (width > 8192 || height > 8192) error = `${width} × ${height} px is larger than 8192 pixels on a side.`;
+  else if (width > 16384 || height > 16384) error = `${width} × ${height} px is larger than 16384 pixels on a side.`;
   else if (width * height > 24_000_000) error = `${width} × ${height} px exceeds 24 megapixels.`;
   return { width, height, error };
 }

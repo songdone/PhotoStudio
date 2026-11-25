@@ -422,7 +422,7 @@ function alphaBoundsOf(f: ImageFeatures): IRect {
 
 /** Rendered size limit: scale a set of output bounds down so their union
  * fits within the document limits. Returns the union and the scale. */
-export function fitOutput(rects: IRect[], maxSide = 8192, maxPixels = 24_000_000) {
+export function fitOutput(rects: IRect[], maxSide = 16384, maxPixels = 24_000_000) {
   let x0 = Infinity,
     y0 = Infinity,
     x1 = -Infinity,

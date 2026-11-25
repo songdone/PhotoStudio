@@ -246,15 +246,15 @@ function toolOptions(e: Editor) {
     .join('');
   const bg = a ? a.artboard.background : defaultBackground(e);
   return `<label>Size <select id="artboard-preset" aria-label="Artboard size preset"><option value="" ${preset ? '' : 'selected'}>Custom</option>${options}</select></label>
-<label>W <input id="artboard-w" type="number" min="1" max="8192" step="1" value="${size.width}" aria-label="Artboard width"></label><button class="icon-button" id="artboard-swap" title="Swap width and height (orientation)" aria-label="Swap width and height">${svg('arrow-left-right', 14)}</button><label>H <input id="artboard-h" type="number" min="1" max="8192" step="1" value="${size.height}" aria-label="Artboard height"></label>
+<label>W <input id="artboard-w" type="number" min="1" max="16384" step="1" value="${size.width}" aria-label="Artboard width"></label><button class="icon-button" id="artboard-swap" title="Swap width and height (orientation)" aria-label="Swap width and height">${svg('arrow-left-right', 14)}</button><label>H <input id="artboard-h" type="number" min="1" max="16384" step="1" value="${size.height}" aria-label="Artboard height"></label>
 <label>Background <select id="artboard-bg">${backgroundOptions.map(([v, l]) => `<option value="${v}" ${bg === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
 <span class="divider"></span><button id="artboard-add" title="${a ? 'Add an artboard to the right of the selected one' : 'Add an artboard of this size'}">${svg('plus', 14)} Add Artboard</button>
 <span class="hint">${a ? escapeXML(a.name) : 'Drag on the canvas to draw an artboard'}</span>`;
 }
 function bindToolOptions(e: Editor, el: HTMLElement) {
   const apply = (width: number, height: number, preset?: string) => {
-    width = Math.max(1, Math.min(8192, Math.round(width)));
-    height = Math.max(1, Math.min(8192, Math.round(height)));
+    width = Math.max(1, Math.min(16384, Math.round(width)));
+    height = Math.max(1, Math.min(16384, Math.round(height)));
     const a = selectedArtboard(e);
     if (a) resizeArtboard(e, a.id, { ...a.artboard.rect, width, height }, preset);
     else e.settings.artboardSize = { width, height, preset };
@@ -476,8 +476,8 @@ async function newArtboardDialog(e: Editor, arg?: unknown) {
     [
       { name: 'name', label: 'Name', value: `Artboard ${n}` },
       { name: 'preset', label: 'Size preset', value: matchingPreset(s.width, s.height, s.preset)?.id ?? '', type: 'select', options: presetFieldOptions() },
-      { name: 'width', label: 'Width (px)', value: s.width, type: 'number', min: 1, max: 8192, step: 1 },
-      { name: 'height', label: 'Height (px)', value: s.height, type: 'number', min: 1, max: 8192, step: 1 },
+      { name: 'width', label: 'Width (px)', value: s.width, type: 'number', min: 1, max: 16384, step: 1 },
+      { name: 'height', label: 'Height (px)', value: s.height, type: 'number', min: 1, max: 16384, step: 1 },
       { name: 'background', label: 'Background', value: defaultBackground(e), type: 'select', options: backgroundOptions },
     ],
     'Create',
@@ -499,7 +499,7 @@ async function newArtboardDialog(e: Editor, arg?: unknown) {
   if (!v) return;
   const width = Math.round(Number(v.width)),
     height = Math.round(Number(v.height));
-  if (!(width >= 1 && height >= 1 && width <= 8192 && height <= 8192)) return void e.message('Use sizes from 1 to 8192 pixels.');
+  if (!(width >= 1 && height >= 1 && width <= 16384 && height <= 16384)) return void e.message('Use sizes from 1 to 16384 pixels.');
   e.settings.artboardSize = { width, height, preset: matchingPreset(width, height, v.preset)?.id };
   let id = '';
   layoutCommand(e, 'New Artboard', (d) => {

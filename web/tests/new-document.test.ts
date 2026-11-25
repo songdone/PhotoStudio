@@ -47,7 +47,7 @@ describe('new document units', () => {
     expect(toPixels(fromPixels(2480, 'col', 300, cols), 'col', 300, cols)).toBe(2480);
   });
   it('reports sizes beyond the limits', () => {
-    expect(specPixels({ ...defaultSpec(), width: 9000, height: 10 }).error).toMatch(/8192/);
+    expect(specPixels({ ...defaultSpec(), width: 17000, height: 10 }).error).toMatch(/16384/);
     expect(specPixels({ ...defaultSpec(), width: 6000, height: 4001 }).error).toMatch(/24 megapixels/);
     expect(specPixels({ ...defaultSpec(), width: 0, height: 10 }).error).toMatch(/greater than zero/);
     expect(specPixels({ ...defaultSpec(), width: 1, height: 1, unit: 'in', ppi: 0.5 }).error).toMatch(/resolution/);

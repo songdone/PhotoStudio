@@ -60,7 +60,7 @@ function intersect(a: Rect, b: Rect): Rect | null {
     h = Math.min(a.y + a.height, b.y + b.height) - y;
   return w > 0 && h > 0 ? { x, y, width: w, height: h } : null;
 }
-const fits = (r: Rect) => r.width <= 8192 && r.height <= 8192 && r.width * r.height <= 24_000_000;
+const fits = (r: Rect) => r.width <= 16384 && r.height <= 16384 && r.width * r.height <= 24_000_000;
 
 /** A nested document holding copies of `roots` (layers of one container),
  * cropped to what they draw, with its composite. `undefined` after a message
@@ -78,7 +78,7 @@ export async function nestedFromLayers(e: Editor, roots: Layer[], doc: PhotoDocu
   area = intersect(area, { x: -doc.width, y: -doc.height, width: doc.width * 3, height: doc.height * 3 }) ?? area;
   if (!fits(area)) area = intersect(area, { x: 0, y: 0, width: doc.width, height: doc.height }) ?? area;
   if (!fits(area)) {
-    e.message('The selected layers are too large for an embedded object (8192 pixels or 24 megapixels).');
+    e.message('The selected layers are too large for an embedded object (16384 pixels or 24 megapixels).');
     return;
   }
   const top = roots.at(-1)!;

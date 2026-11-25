@@ -182,6 +182,6 @@ describe('Generate Image and Upscale helpers', async () => {
     expect(upscaleSize(4000, 3000, 200)).toEqual({ width: 8000, height: 6000, fits: false });
     expect(maxPercent(4000, 3000)).toBe(141);
     expect(upscaleSize(4000, 3000, 141).fits).toBe(true);
-    expect(maxPercent(8192, 100)).toBe(100);
+    expect(maxPercent(16384, 100)).toBe(100);
   });
 });

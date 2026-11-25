@@ -278,7 +278,7 @@ export function interpretAlpha(data: Uint8ClampedArray, mode: VideoAlpha) {
 const finite = (n: unknown) => typeof n === 'number' && Number.isFinite(n);
 export function validateVideoLayer(v: VideoLayerData, packed: (g: unknown) => boolean) {
   const bad = () => new Error('Invalid video layer.');
-  if (!v || typeof v !== 'object' || ![v.x, v.y].every(finite) || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width < 1 || v.height < 1 || v.width > 8192 || v.height > 8192) throw bad();
+  if (!v || typeof v !== 'object' || ![v.x, v.y].every(finite) || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width < 1 || v.height < 1 || v.width > 16384 || v.height > 16384) throw bad();
   if (!finite(v.fps) || v.fps <= 0 || v.fps > 240 || !videoAlphaModes.some(([m]) => m === v.alpha) || !Number.isInteger(v.loops) || v.loops < 0 || v.loops > 10000) throw bad();
   if (!Number.isInteger(v.frames) || v.frames < 1 || v.frames > maxVideoFrames) throw bad();
   const f = v.footage;

@@ -276,7 +276,7 @@ class ContextScaleSession extends WarpSession<Snap> {
     );
     const size = (key: 'width' | 'height') => (v: string, t: HTMLInputElement) => {
       const n = Math.round(Number(v));
-      if (!Number.isFinite(n) || n < 1 || n > 8192) return void (t.value = String(Math.round(this.frame[key])));
+      if (!Number.isFinite(n) || n < 1 || n > 16384) return void (t.value = String(Math.round(this.frame[key])));
       this.push();
       this.frame = { ...this.frame, [key]: n };
       this.syncFields();

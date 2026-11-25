@@ -90,9 +90,9 @@ export function outputSize(w: number, h: number, s: Pick<ExportSettings, 'sizeMo
     nw = s.width || w;
     nh = s.height || h;
   }
-  // Scaled sizes keep their proportions within the 8192-pixel limit.
-  const k = s.sizeMode === 'exact' ? 1 : Math.min(1, 8192 / nw, 8192 / nh);
-  return [Math.max(1, Math.min(8192, Math.round(nw * k))), Math.max(1, Math.min(8192, Math.round(nh * k)))];
+  // Scaled sizes keep their proportions within the 16384-pixel limit.
+  const k = s.sizeMode === 'exact' ? 1 : Math.min(1, 16384 / nw, 16384 / nh);
+  return [Math.max(1, Math.min(16384, Math.round(nw * k))), Math.max(1, Math.min(16384, Math.round(nh * k)))];
 }
 /** Largest size that fits within w × h, keeping the aspect ratio (never enlarges unless asked). */
 export function fitSize(w: number, h: number, maxW: number, maxH: number, enlarge = false): [number, number] {
@@ -166,8 +166,8 @@ export function prepareExport(
   let data =
     owned && same ? src.data : resampleRGBA(src.data, src.width, src.height, nw, nh, s.resample);
   let img: SourceImage = { width: nw, height: nh, data };
-  const cw = s.canvasWidth > 0 ? Math.min(8192, Math.round(s.canvasWidth)) : nw,
-    ch = s.canvasHeight > 0 ? Math.min(8192, Math.round(s.canvasHeight)) : nh;
+  const cw = s.canvasWidth > 0 ? Math.min(16384, Math.round(s.canvasWidth)) : nw,
+    ch = s.canvasHeight > 0 ? Math.min(16384, Math.round(s.canvasHeight)) : nh;
   img = placeOnCanvas(img, cw, ch);
   data = img.data;
   const deep = s.depth === 16 && info.deep && data instanceof Uint16Array;
